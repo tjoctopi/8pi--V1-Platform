@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 2 verification of 8pi Platform v1 depth features (Attack-path engine + SSE stream + Asset drill-down + Live Log). All 6 requested features PASS. Backend: GET /api/engagements/{id}/attack-path returns 4 paths (3 steps each: entry->pivot->crown), 28 points, 8 arcs, 16 entry_points, 8 crown_jewels, stats {entry:16, crown:8, pivot:4, paths:4}. GET /api/engagements/{id}/attack-path/stream returns Content-Type text/event-stream, streams 132 lines starting with {status:'start',paths:4}, many {delta:...} chunks, and terminates with {done:true, route:'hosted-frontier', usage:{token_in:402, token_out:914, latency_ms:32759, cost:0.011853}} — real Claude via hosted LLM key. A model_calls record with purpose='attack_path_analysis' was created (1 attack_path_analysis entry in GET /api/model/calls?engagement_id=). GET /api/engagements/{id}/assets/{aid} returns {asset, findings(3), parent, children(3 services for host), invocations(3)}. Frontend: Attack Path tab renders 3D globe (data-testid='attack-globe'), 4 stat tiles showing 16/4/8/4, 4 candidate path cards. Generate button triggers SSE stream — text progressively fills from 50→1017→3054 chars, STREAMING indicator shows, and completes with HOSTED-FRONTIER route badge + Claude-authored narrative citing Ghostcat CVE-2020-1938 and Apache httpd CVE-2021-41773. Assets tab modal opens on asset row click with Internal/Host badges, SBOM chips (nginx 1.18.0, Apache Tomcat 9.0.30, Samba 4.9.5), Findings-on-this-asset list (3 CVEs with confirmation status), and Relationships section. Dashboard shows 3 Live Activity terminals (one per active engagement); Dogfood card populated with recent audit events (attack_path_generated, out_of_scope_attempt, exploit_confirmed, tool_invocation, engagement_activated, etc.) — not stuck on 'awaiting events…'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Attack Path tab", "issues": ["Non-blocking WebGL console warnings 'Too many active WebGL contexts. Oldest context will be lost' when the globe is remounted several times — react-globe.gl allocates a new WebGL context per mount; consider memoizing/persisting the Globe instance or lazy-mounting to reduce context churn during rapid navigation."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_8pi_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "attack_path.py: fine, but SSE endpoint should tolerate client disconnect cleanly — verify StreamingResponse iterator swallows CancelledError so a browser navigation away doesn't spam backend logs.",
+    "AttackPathTab.jsx: multiple <Globe /> mounts during tab switches leak WebGL contexts (see warning). Consider useMemo or a module-level cached Globe instance.",
+    "Live-log polling every 4s per active card = N parallel timers on Dashboard. Fine for 3 engagements; if list scales, coalesce into a single poll."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (3/3 new endpoints)", "frontend": "100% (3/3 new UI flows)"},
+  "test_credentials": "None — no auth in v1.",
+  "seed_data_creation": "None — used seeded Dogfood engagement 96bd6e5bed2542e7918d3e1740b1475f as instructed. No permanent halt.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 6 iteration-2 features verified end-to-end. SSE streams real Claude tokens (~33s latency, hosted-frontier). Frontend typewriter reveals accumulating buffer at ~4char/16ms so streaming feels smooth. Asset modal keyword scan missed 'Parent/Children/Services' because UI uses different labels; visually the Relationships section renders correctly (see screenshot). Stat-tile keyword scan initially reported 'MISSING' because labels are rendered uppercase via CSS text-transform while playwright inner_text returns rendered text — false negative; screenshot confirms all 4 tiles present with correct numbers (16/4/8/4).",
+  "rca of the issue": "N/A — no failures."
+}

@@ -1,0 +1,76 @@
+# 8pi v1 — one-command local / production stack
+# Usage:
+#   1. Copy .env.example to .env and fill in the values (JWT_SECRET, AWS_REGION, BEDROCK_MODEL_ID, ADMIN creds).
+#   2. docker compose up -d --build
+#   3. Open http://localhost (or your VPS IP). Sign in with the admin credentials from .env.
+#
+# Services:
+#   - mongo    : MongoDB 7 (data persisted in the `mongo_data` volume)
+#   - backend  : FastAPI + real CLI security tools (nmap, nikto, wpscan, sqlmap, gobuster)
+#   - frontend : React SPA served by nginx; reverse-proxies /api → backend
+#
+# For AWS EC2 deployment see /deploy/README.md.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks: [eightpi]
+    # Bind to loopback only — the DB is never exposed to the internet.
+    ports: []
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-eightpi_db}
+      JWT_SECRET: ${JWT_SECRET}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-8pi Admin}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-us.anthropic.claude-opus-4-8}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TOOL_MODE: ${TOOL_MODE:-auto}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-}
+    networks: [eightpi]
+    # Backend is internal-only; frontend nginx proxies /api to it.
+    expose:
+      - "8001"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # empty → SPA uses relative /api (same-origin via nginx)
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    networks: [eightpi]
+
+networks:
+  eightpi:
+    driver: bridge
+
+volumes:
+  mongo_data:
+    driver: local

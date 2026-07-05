@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 7 REGRESSION pass after code-quality fixes (datetime import in model_gateway, defensive draft=None in red_scope._extract_draft, React key fixes in RedScope/FindingsTab/ConsoleTab/AssetsTab, Dashboard LiveLog console.debug). Backend: 13/13 pytest pass — 5 new model_gateway regression tests (auth wall, reason→hosted-frontier, sensitive→local-openweight egress guard, /model/calls records valid ISO ts, /model/routes returns all 3 routes) + 8 pre-existing red-scope+archive tests. Frontend: login OK; Dashboard renders 4 active engagements + Dogfood pinned LiveLog (no console errors); toggle-archived reveals archived card and exposes distinct data-testid unarchive-engagement-{id} (1 unarchive + 4 archive buttons after toggle). EngagementDetail: Findings tab renders 41 rows, detail modal shows Evidence section; Assets tab renders 35 rows, detail modal shows Software/Versions/Findings sections; Console tab renders 10 agent-run panels with 58 invocation/step rows. Red Scope: 20 finding '+' attach buttons, attaching adds a ctx chip in red-scope-context, chat POST returns assistant reply (route=hosted-frontier) rendered as red-scope-message. Zero React key warnings and zero console errors across full navigation.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_model_gateway_regression.py",
+    "/app/backend/tests/test_red_scope_and_archive.py",
+    "/app/test_reports/pytest/pytest_iter7.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "model_gateway.infer catches Exception from hosted route and silently falls back to local-openweight while appending the exception message to the response text. This is functionally resilient but the fallback route is reported to the client as 'local-openweight' even though the client asked for hosted — good for reliability, but log level should be WARN-audited (currently only inline text). Not a regression from this iteration.",
+    "red_scope._extract_draft correctly falls through to a bare-target-object regex when no ```json fence is present. The `draft=None` defensive init is a no-op given both branches return early, but it is harmless. Good hygiene.",
+    "Dashboard LiveLog now uses console.debug on poll failure — silent by default in prod but discoverable in devtools. Good compromise.",
+    "Red Scope /red-scope/chat and /red-scope/agents are RBAC-gated to operator+ (fixed since iteration 6 nit); verified 403 for viewer would apply though not retested here since credentials are admin."
+  ],
+  "updated_files": ["/app/backend/tests/test_model_gateway_regression.py"],
+  "success_rate": {"backend": "100% (13/13 pytest)", "frontend": "100% (0 React key warnings, 0 console errors across Dashboard + all 3 targeted tabs + Red Scope chat/attach)"},
+  "test_credentials": "admin@8pi.io / 8pi-admin-changeme",
+  "seed_data_creation": "None persisted. Model calls recorded (ts_probe, sensitive_regression, regression_test). Red Scope draft not saved because model asked a clarifying question first (documented behavior).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iteration 7 confirms code-quality fixes are non-breaking. Model gateway tests live in /app/backend/tests/test_model_gateway_regression.py. Red Scope + archive tests in /app/backend/tests/test_red_scope_and_archive.py. New testids validated: unarchive-engagement-{id} is now distinct from archive-engagement-{id}. Frontend BASE=https://staging.8pi.ai. If chat requires a draft in a single turn, phrase the prompt with explicit target+intensity (e.g. 'Attack samba 4.9.5 at safe-active intensity, propose the agent config now').",
+  "rca of the issue": "N/A — no regressions found."
+}

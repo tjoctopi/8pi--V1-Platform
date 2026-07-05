@@ -1,0 +1,25 @@
+{
+  "summary": "Verified 8pi v1 rebrand + JWT auth + real-tool + RBAC end-to-end. Backend pytest: 28 passed + 1 skipped (skip = test_approve_rbac_forbidden_for_operator has no pending approval left because the preceding admin-approve test consumed it — test ordering artefact only; RBAC itself confirmed working via direct curl: operator gets 403 on both /api/auth/users and /api/approvals/{id}/approve). Auth wall works: unauth GET /api/engagements=401, admin bearer=200, /api/health and /api/readiness stay public 200. Tool availability endpoint returns real mode for nmap/gobuster/sqlmap (installed) and sim for nikto/wpscan (not installed) as expected. Frontend: /login renders 8π logo + magenta SIGN IN button (rgb(255,0,160)); admin login redirects to /; sidebar shows EightPi logo + admin@8pi.io + ADMIN role badge; /users page renders users-page + user-add-btn + admin row + newly created test.operator row with delete button; engagement page has 10 tabs (Overview, RoE, Assets, Threat Map, Attack Path, Console, Findings, Vuln Loop, Audit, Report); Attack Path tab shows attack-globe (grayscale continents + magenta atmosphere glow visible in screenshot) and layer-legend with all 7 layers populated (endpoints=4, saas=1, cloud=7, dev=5, code=1, on-prem=16, edge=1); kill-switch-btn present with magenta styling. No console errors (only benign WebGL GPU-stall warnings).",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "tests/test_8pi_backend.py::test_approve_rbac_forbidden_for_operator", "issue": "Skipped because test_offensive_run_and_approval (runs earlier in-suite) already consumed the sole pending approval on Dogfood, leaving no pending approval for the operator-403 assertion. RBAC itself is confirmed working via direct curl (operator → /api/approvals/fake/approve → 403; /api/auth/users → 403). Minor: consider seeding a second pending approval in the RBAC test fixture, or run it before the admin-approval test."}
+  ]},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_8pi_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(minor) Make test_approve_rbac_forbidden_for_operator self-provision a fresh pending approval so it doesn't get skipped when run after test_offensive_run_and_approval."
+  ],
+  "critical_code_review_comments": [
+    "Auth wall pattern (public health/readiness/login routers separated from Depends(get_current_user)-guarded router) is clean.",
+    "SSE ?token= query fallback for EventSource is a pragmatic and standard workaround; make sure the token in the URL is redacted from server access logs.",
+    "seed_admin() correctly rotates the bcrypt hash on env password change (idempotent) — matches test_credentials.md guidance.",
+    "orchestration.py ignoring client-supplied role and reading from JWT is the correct fix for the previous client-side role-switcher bypass."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% functional (28/28 executed; 1 skipped as test-ordering artefact, RBAC verified out-of-band)", "frontend": "100% on all requested items"},
+  "test_credentials": "admin@8pi.io / 8pi-admin-changeme (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created test.operator@8pi.io / opoperator123 (role=operator) via POST /api/auth/users to verify RBAC + /users delete + non-admin /users guard.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Auth is now mandatory on all /api routes except /api/auth/login, /api/auth/refresh, /api/health, /api/readiness, /api/. Use the admin bearer token from POST /api/auth/login. The pytest fixture `s` already handles this. The one skipped RBAC test is a benign ordering artefact — direct curl confirms operator gets 403. Rebrand landed correctly: magenta accent #FF00A0 for danger/kill/primary CTAs; grayscale continents on the globe with magenta atmosphere glow. 10 engagement tabs (Overview, RoE, Assets, Threat Map, Attack Path, Console, Findings, Vuln Loop, Audit, Report).",
+  "rca of the issue": "The single skipped test is due to test ordering: test_offensive_run_and_approval (runs first) approves the only pending Dogfood approval as admin, so when test_approve_rbac_forbidden_for_operator scans for a pending approval to test operator-403 against, it finds none and pytest.skip() fires. RBAC is proven correct via direct curl in this run. Mitigation: have the RBAC test create its own pending approval (or run before the admin-approve test)."
+}

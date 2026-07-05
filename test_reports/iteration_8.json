@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only verification of the ROE tab crash fix. Logged in as admin@8pi.io, opened the pinned Dogfood engagement, and iterated all 10 engagement tabs. ROE tab now renders end-to-end (no error boundary) with allowlist textarea, max intensity select, 7 tool buttons (nmap, nikto, dirbust, wpscan, sqlmap, burp, nessus), and Signature panel. All other tabs (Overview, Assets, Threat Map, Attack Path, Console, Findings, Vuln Loop, Audit, Report) also render OK. Red Scope page and Dashboard (with Show Archived toggle) regression-verified.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix in frontend/src/lib/api.js (`tools: () => http.get('/tools').then((r) => r.data.tools)`) is correct — matches backend GET /tools contract {tools, tool_mode}.",
+    "RoeTab defensive `Array.isArray(tools) ? tools : []` is good; consider applying same guard pattern to any other endpoint whose payload was refactored to an object envelope."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100%"},
+  "test_credentials": "admin@8pi.io / 8pi-admin-changeme",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Engagement tab labels appear uppercase via CSS but DOM text is Title case (Overview, RoE, Assets, Threat Map, ...). Use case-insensitive or Title case selectors. Pinned Dogfood engagement id: 96bd6e5bed2542e7918d3e1740b1475f.",
+  "rca of the issue": "Prior crash: backend /tools returns {tools:[...], tool_mode} envelope while frontend api.tools() returned the whole object; RoeTab called tools.map(). Fixed by unwrapping r.data.tools in api.js plus Array.isArray guard in RoeTab. Verified: 7 roe-tool-{id} buttons render, no error boundary on any engagement tab."
+}

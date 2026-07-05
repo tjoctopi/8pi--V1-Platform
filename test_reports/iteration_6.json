@@ -1,0 +1,32 @@
+{
+  "summary": "E2E verification of Red Eye incident hub + Adversary Copilot + Archive/Unarchive engagements. Backend: 8/8 new pytest tests pass (red-eye feed shape+counts, auth wall, chat draft via hosted-frontier, save-to-registry persists with origin='red-eye', input sanitization coerces invalid role/intensity/tools, archive hides + include_archived=1 reveals, unarchive restores, Dogfood pinned+unarchived, create_agent_core regression via POST /agents). Frontend: sidebar 'RED EYE' link (blood-red accent) navigates to /red-eye; page renders red-eye-page + 3 IncidentStat tiles (Halted/Critical/Exploit) with live counts from GET /api/red-eye; feed shows halted engagements, 20 critical findings, exploit approvals (0 as expected — seed consumed); Adversary Copilot chat accepts NL prompt, returns assistant reply AND red-eye-draft editor with editable name/role/intensity/tools; renaming draft to 'test-e2e-redeye-agent' + Save to Registry produced success toast, agent visible in /agents with origin 'red-eye'; Dashboard archive button (archive-engagement-{id}) hides card from default list, 'SHOW ARCHIVED' toggle reveals it with Archived badge, same button (now titled 'Unarchive engagement', counter-clockwise icon) restores the engagement to the active list. Dogfood remains pinned/unarchived. No JS console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard engagement card", "issues": ["The archive/unarchive control uses the same data-testid 'archive-engagement-{id}' for both states (only the title attr + icon change). Requirement spec mentions an 'unarchive' testid — consider exposing a distinct 'unarchive-engagement-{id}' when e.archived is true for clearer test targeting. Functionally correct; label/testid convention is the only nit."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_red_eye_and_archive.py",
+    "/app/test_reports/pytest/pytest_iter6.xml"
+  ],
+  "action_items": [
+    "(nit) Consider a distinct data-testid 'unarchive-engagement-{id}' on the same button when e.archived is true so tests can assert the toggled state without inspecting the title attr."
+  ],
+  "critical_code_review_comments": [
+    "red_eye._sanitize_draft correctly coerces bad role/intensity/tools to safe defaults — nice defense-in-depth even though clients send validated JSON.",
+    "red_eye_save_agent uses create_agent_core (refactor from agent_runtime) and then writes red_eye_brief in a second update_one — could be one write; not a functional issue.",
+    "orchestration.list_engagements defaults to archived:{$ne:True} so pre-refactor engagements without the archived field (e.g. seeded Dogfood) still appear — correct backward compatibility.",
+    "Red Eye is not RBAC-gated at the router level; POST /red-eye/agents lets any authenticated user (incl. viewer) create an agent. If viewers should NOT create agents, add role_at_least('operator') on /red-eye/chat and /red-eye/agents (and same for /agents create). Not blocking MVP but worth checking against the RBAC intent."
+  ],
+  "updated_files": ["/app/backend/tests/test_red_eye_and_archive.py"],
+  "success_rate": {"backend": "100% (8/8 new tests pass)", "frontend": "100% (all 3 flows: incident hub render, copilot draft+save, archive/unarchive)"},
+  "test_credentials": "admin@8pi.io / 8pi-admin-changeme",
+  "seed_data_creation": "Created TEST_redeye_sqli_agent, TEST_redeye_sanitize, TEST_core_refactor_agent, test-e2e-redeye-agent agents; TEST_archive_flow + TEST_ui_archive_flow2 engagements (final state: unarchived, RoE unsigned).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Red Eye backend at /api/red-eye (GET feed), /api/red-eye/chat (POST NL → {reply, draft, route}), /api/red-eye/agents (POST → creates agent w/ origin='red-eye', stores red_eye_brief). Archive at POST /api/engagements/{id}/archive & /unarchive; list defaults to archived-hidden; ?include_archived=1 shows all. Frontend testids: red-eye-page, red-eye-feed, red-eye-chat-input, red-eye-send, red-eye-message, red-eye-draft, red-eye-draft-{name,role,intensity}, red-eye-save-agent, red-eye-refresh, redeye-stat-{halted,critical-findings,exploit-approvals}, toggle-archived, archive-engagement-{id} (same button used for unarchive when e.archived — differentiate via title attr). Draft response schema: agent doc has spec.tools & spec.guardrails.max_intensity (NOT top-level tools/max_intensity).",
+  "rca of the issue": "N/A — no bugs found. Two initial test assertions failed because I expected top-level 'tools'/'max_intensity' on the agent response; they live under 'spec.tools' and 'spec.guardrails.max_intensity'. Adjusted assertions; all pass."
+}

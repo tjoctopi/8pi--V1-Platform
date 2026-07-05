@@ -1,0 +1,25 @@
+{
+  "summary": "Final deployment-readiness regression pass for 8pi Platform v1. Backend: 24/24 pytest tests PASS (added 5 new tests covering /api/health, /api/readiness, /api/engagements/{id}/attack-path, and SSE stream Content-Type + terminator). Both /api/health and /api/readiness return the expected payloads in <500ms (health: {status:'ok',platform:'8pi',version:'v1'}; readiness: {status:'ok',mongo:'up'}). Model gateway 3 routes verified, hosted-frontier records a model_calls entry, openmythos returns 501. SSE stream returns text/event-stream, streams data lines, and terminates with {done:true, route:'hosted-frontier', usage:{...}}. Frontend: Dashboard renders with Dogfood engagement card + live mini-logs; no app-error state under happy path. 404 route /this-route-does-not-exist renders data-testid='not-found-page' with working 'Back to Dashboard' button (nav returns to /). Engagement detail shows all 9 tabs (Overview, RoE, Assets, Threat Map, Attack Path, Console, Findings, Vuln Loop, Audit, Report). Attack Path tab renders 3D globe (data-testid='attack-globe'), 4 stat tiles (16 entry / 4 pivots / 8 crown / 4 paths), 4 play-path-{id} buttons, generate-attack-path-btn. WebGL dispose fix VERIFIED: globe survives 4 rapid tab-switch cycles with ZERO 'context lost' console errors (previously iteration-2 saw churn warnings). Console tab role-switcher opens dropdown revealing role-approver option, selecting it switches header badge to APPROVER. Kill switch header button opens confirm modal with data-testid='kill-confirm-input'. All 4 new items (health, readiness, 404 page, error boundary presence, WebGL dispose fix) PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Attack Path tab", "issues": ["Benign GPU driver perf warnings 'GPU stall due to ReadPixels' from WebGL — non-blocking, native driver notice, does not affect rendering."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_8pi_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Note: original review_request mentions POST /api/model/completions, but the actual endpoint is POST /api/model/infer (verified in code + tests). No action needed — the endpoint works end-to-end; only the review-request wording differs.",
+    "AppErrorBoundary + NotFound are minimal but functional; NotFound uses the platform's Panel/Btn UI kit and preserves the app shell aesthetic."
+  ],
+  "updated_files": ["/app/backend/tests/test_8pi_backend.py"],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100% on all requested new/regression items"},
+  "test_credentials": "None — no auth in v1.",
+  "seed_data_creation": "None — used seeded Dogfood engagement 96bd6e5bed2542e7918d3e1740b1475f. TEST_ prefixed lifecycle/kill/agent artifacts left in DB (harmless).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v1 is deployment-ready. All 4 new items verified: (1) /api/health + /api/readiness endpoints work and are fast; (2) NotFound 404 page renders with working Back-to-Dashboard nav; (3) AppErrorBoundary does not interfere with happy-path rendering; (4) WebGL dispose fix eliminates context-lost errors on rapid Attack Path tab switching (0 errors after 4 switch cycles vs. warnings in iteration-2). If any UI selector appears missing, verify by taking a screenshot before flagging — CSS text-transform can cause inner_text false negatives (see iteration_2 note). Backend endpoint is /api/model/infer, NOT /api/model/completions (spec wording quirk).",
+  "rca of the issue": "N/A — no failures."
+}
