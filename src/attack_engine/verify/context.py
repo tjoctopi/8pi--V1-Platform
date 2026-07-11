@@ -1,0 +1,23 @@
+"""Context handed to verification oracles.
+
+Deliberately narrow: an oracle gets a scope-enforcing Tool Runner (its only way
+to touch a target), the knowledge store (read-only use), and the audit log. It
+never gets a raw socket or the model gateway — verification is *deterministic*
+(rule #1), so it must not consult an LLM.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..governance.audit import AuditLog
+from ..knowledge.store import KnowledgeStore
+from ..toolrunner.runner import ToolRunner
+
+
+@dataclass
+class VerifyContext:
+    engagement_id: str
+    tool_runner: ToolRunner
+    store: KnowledgeStore
+    audit: AuditLog

@@ -1,0 +1,24 @@
+# Surface Mapper — network + web recon (read-only). Spec §4 / §6.1.
+# The archetype is instantiated purely from this data: change the tool list to
+# make it a network-only or web-only mapper — no code changes (rule #3).
+id: surface_mapper
+archetype: recon_tool_driver
+goal: "Discover live hosts, services, versions, and web surface on in-scope targets"
+model_tier: local            # routed via the BYOM gateway, never a fixed model
+tools:
+  # NOTE: masscan is registered but intentionally NOT bound here — it needs raw
+  # sockets (NET_RAW), which the hardened sandbox forbids (--cap-drop ALL). Nmap
+  # runs a connect scan (-sT) that needs no raw socket and covers discovery.
+  - nmap          # accurate service/version detection (connect scan)
+  - httpx         # HTTP tech/version fingerprinting
+  - ffuf          # web content discovery
+  - nessus        # LICENSED network vuln scan — refused unless RoE enables it
+scope_ref: engagement-1723   # RoE + allowlist enforced at the Tool Runner
+guardrails:
+  read_only_default: true
+  require_gate_before: []    # recon is read-only; no gate required
+stop_conditions:
+  max_findings: 500
+  max_runtime_sec: 3600
+  max_tool_calls: 200
+  on_out_of_scope: halt

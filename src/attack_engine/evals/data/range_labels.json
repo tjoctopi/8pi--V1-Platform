@@ -1,0 +1,11 @@
+{
+  "name": "range",
+  "labels": [
+    {"asset": "10.5.0.10", "type": "CVE-2021-41773", "exploitable": true,
+     "note": "Planted: Apache 2.4.49 path traversal, internet-facing, on KEV."},
+    {"asset": "10.5.0.10", "type": "sqli-boolean-blind", "exploitable": true,
+     "note": "Planted: boolean-blind SQLi in the web app search endpoint."},
+    {"asset": "10.5.0.99", "type": "CVE-2012-2122", "exploitable": false,
+     "note": "Trap: internal-only theoretical MySQL CVE; unreachable → must be deprioritised."}
+  ]
+}

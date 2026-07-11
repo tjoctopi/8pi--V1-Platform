@@ -1,0 +1,51 @@
+# Ground-truth cyber range — the yardstick and the safe sandbox (spec §7).
+#
+# Known-vulnerable targets with *planted* bugs, so the engine's precision/recall
+# can be measured against ground truth. Everything sits on an isolated bridge
+# network with a fixed subnet, so an engagement scope maps cleanly onto it:
+#
+#     allowed_cidrs: ["10.5.0.0/24"]
+#
+# This range is intentionally vulnerable. NEVER expose it to an untrusted
+# network. Bring it up only on a host you control.
+name: attack-engine-range
+
+networks:
+  range_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.5.0.0/24
+
+services:
+  # OWASP Juice Shop — modern web app with a wide OWASP-Top-10 surface.
+  juice-shop:
+    image: bkimminich/juice-shop:v17.1.1
+    container_name: ae-juice-shop
+    restart: unless-stopped
+    networks:
+      range_net:
+        ipv4_address: 10.5.0.10
+    ports:
+      - "127.0.0.1:3000:3000"   # bound to localhost only
+
+  # DVWA — classic planted vulns (SQLi, XSS, command injection, file upload).
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: ae-dvwa
+    restart: unless-stopped
+    networks:
+      range_net:
+        ipv4_address: 10.5.0.11
+    ports:
+      - "127.0.0.1:8080:80"
+
+  # Metasploitable 2 — network-service targets (vsftpd, Samba, Apache, MySQL…).
+  metasploitable:
+    image: tleemcjr/metasploitable2:latest
+    container_name: ae-metasploitable
+    restart: unless-stopped
+    command: ["/bin/sh", "-c", "service ssh start; /etc/init.d/apache2 start; tail -f /dev/null"]
+    networks:
+      range_net:
+        ipv4_address: 10.5.0.12
