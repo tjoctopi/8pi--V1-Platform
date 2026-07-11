@@ -1,110 +1,125 @@
-# 8pi — Agentic Cybersecurity Platform (v1)
+# 8π Coordinated Attack Engine
 
-> **Purple-team console with AI-driven attack-path reasoning.**
-> Scoped, RoE-signed engagements → sensing → threat map → attack path (ecosystem globe) → agents → vuln loop → reporting. Every action is auditable via a tamper-evident hash chain.
+> The full purple-team loop — coordinated, robust, and accuracy-first — built on
+> the best available open tooling and a BYOM (Bring-Your-Own-Model) layer.
 
-## Highlights
+This is **one coordinated attack mechanism**, not five disconnected agents. It
+runs the full purple-team loop end to end:
 
-- **Signed Rules of Engagement + tamper-evident audit chain** (SEC-01, SEC-04)
-- **7-layer Ecosystem Attack-Path Globe** (Code · Dev · Cloud · SaaS · Endpoints · On-Prem · Edge/IoT/AI) with animated "Play Breach" walkthroughs
-- **Real CLI tools** (nmap, nikto, wpscan, sqlmap, gobuster, dirb) — scope-checked, sim fallback
-- **Real Model Gateway** — Anthropic Claude (Opus 4.8) via AWS Bedrock (boto3), with a deterministic on-prem fallback
-- **JWT auth** with 4 roles (admin · approver · operator · viewer); brute-force lockout
-- **Live SSE mini-logs** on the dashboard; kill-switch that halts every in-flight action
-- **Reproducible reporting** (JSON · HTML · PDF)
+```
+plan → recon → verify → correlate → exploit-confirm → convert → re-test
+```
 
-## Stack
+Steps 1–4 are fully autonomous and safe (read-only / confirmation-only).
+Steps 5–7 touch real change and are **gated** behind a human. The Blue Sentry
+agent observes the entire run in parallel.
 
-- Backend: **FastAPI + MongoDB (Motor)** — port 8001
-- Frontend: **React (CRA) + Tailwind + react-globe.gl** — served by nginx (proxies `/api` → backend)
-- Deploy: Docker Compose. AWS via Terraform or CloudFormation (see `deploy/`).
+## The four non-negotiable rules
 
-## Local development
+Every component obeys these. They are enforced *structurally* — in code and
+schema — not by convention:
+
+1. **Propose vs. verify.** The model/agent **proposes**; deterministic code
+   **verifies**. No finding is "confirmed" on an LLM's say-so — only a passed
+   verification oracle promotes it. (`schemas/findings.py`, `verify/`)
+2. **Scope at the boundary.** Allowlists, rate limits, and RoE are enforced by
+   the Tool Runner, never by an agent. An out-of-scope target is refused
+   *before* any tool executes. (`toolrunner/scope.py`)
+3. **Roles, not tool-copies.** One agent archetype per reasoning role; tools
+   swap via a registry. Adding "another way of attacking" = registering a tool
+   wrapper, not cloning an agent. (`toolrunner/registry.py`, `agents/`)
+4. **Model-agnostic (BYOM).** No model is hardcoded. Everything routes through
+   the gateway; the specialized model swaps in the day it wins the eval.
+   (`gateway/`)
+
+**Governance is a feature.** Every tool call, proposed action, and model
+decision is written to an immutable, hash-chained audit log tied to a signed
+engagement. Anything with real-world effect passes a human-in-the-loop gate.
+
+## Status: Sprint 3 complete — hardened & proven (RBAC, Neo4j, NVD/KEV, eval)
+
+| Component | Module | Status |
+|-----------|--------|--------|
+| Scope enforcement (radix-trie CIDR, rate limits) | `toolrunner/scope.py` | ✅ Sprint 0 |
+| Immutable hash-chained audit log | `governance/audit.py` | ✅ Sprint 0 |
+| Knowledge store (NetworkX attack graph, dedup) | `knowledge/` | ✅ Sprint 0 |
+| Event bus (blackboard) | `eventbus/` | ✅ Sprint 0 |
+| Tool Runner + registry + wrappers | `toolrunner/` | ✅ Sprint 0–1 |
+| BYOM gateway (LiteLLM → Fireworks OSS) | `gateway/` | ✅ Sprint 0 |
+| Surface Mapper agent | `agents/archetypes/recon.py` | ✅ Sprint 0 |
+| Ground-truth range | `range/` | ✅ Sprint 0 |
+| **Verification Layer** (oracles, fusion, calibration) | `verify/` | ✅ Sprint 1 |
+| **Version interval matching** | `versioning.py` | ✅ Sprint 1 |
+| **Exploitability Matcher** (CVE/KEV, Bayesian score) | `correlate/` | ✅ Sprint 1 |
+| **Web Inquisitor** (Nuclei/Nikto/WPScan) | `agents/archetypes/web.py` | ✅ Sprint 1 |
+| **Exploit-Confirmer** (SQLMap confirm-only, gated) | `agents/archetypes/exploit.py` | ✅ Sprint 1 |
+| **Orchestrator** (attack-graph DAG plan + gate enforcement + re-test) | `orchestrator/` | ✅ Sprint 2 |
+| **Converter** (finding → proposed patch/ticket, gated apply) | `agents/archetypes/converter.py` | ✅ Sprint 2 |
+| **Blue Sentry** (tails the bus, noise vs out-of-RoE) | `defense/` | ✅ Sprint 2 |
+| **Close-the-loop re-test + reporting** | `orchestrator/retest.py`, `report.py` | ✅ Sprint 2 |
+| **RBAC + multi-engagement isolation** | `governance/rbac.py`, `manager.py` | ✅ Sprint 3 |
+| **Neo4j graph backend** (pluggable; NetworkX default) | `knowledge/neo4j_backend.py` | ✅ Sprint 3 |
+| **NVD + CISA-KEV ingest** (interval-correct) | `correlate/nvd.py` | ✅ Sprint 3 |
+| **Licensed scanners** (Nessus/Burp, procurement-gated) | `toolrunner/wrappers/licensed.py` | ✅ Sprint 3 |
+| **Eval harness** (precision/recall + calibration) | `evals/` | ✅ Sprint 3 |
+| **Risk map + hardening actions** (partner writeup) | `orchestrator/report.py` | ✅ Sprint 3 |
+
+All 7 agents from the spec are implemented, and the platform is hardened for
+multi-tenant, regulated use. Run the pipelines:
 
 ```bash
-git clone https://github.com/YOUR-ORG/8pi.git && cd 8pi
-cp .env.example .env
-# Fill: JWT_SECRET (64-hex), SEED_ADMIN_*, AWS_REGION, BEDROCK_MODEL_ID (AWS creds via IAM role / ~/.aws / env)
-docker compose up -d --build
-open http://localhost                # sign in with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD
+# Autonomous, read-only pipeline (recon → verify → correlate):
+attack-engine assess --scope examples/engagement-range.scope.yaml 10.5.0.10
+
+# Full coordinated loop with Orchestrator + Blue Sentry (plan → attack →
+# confirm → propose fix → report). Applying fixes + re-test is a separate,
+# gated step (Orchestrator.close_loop), never run autonomously:
+attack-engine engage --scope examples/engagement-range.scope.yaml 10.5.0.10 --markdown
 ```
 
-Backend logs: `docker compose logs -f backend`. Data persists in the `mongo_data` volume.
+> **The two things that must exist before any offense** are the scope boundary
+> and the audit log. Both are built in Sprint 0; neither can be retrofitted
+> safely.
 
-## Deploying to AWS
+## Quickstart (dev)
 
-See **[`deploy/README.md`](deploy/README.md)** — three paths:
+```bash
+uv venv --python 3.11
+uv pip install -e ".[dev]"
 
-- **A. Docker Compose on your own EC2** (5 min)
-- **B. Terraform single-EC2** — `terraform apply` (10 min) — Elastic IP + optional Let's Encrypt
-- **C. CloudFormation single-EC2** — one `aws cloudformation deploy` call
+# Full suite runs with ZERO external services (in-memory / SQLite fallbacks).
+pytest
 
-## Roles
-
-| Role      | Rank | Can do                                                        |
-| --------- | ---- | ------------------------------------------------------------- |
-| admin     | 3    | Everything + user management                                  |
-| approver  | 2    | Approve / deny exploit-intensity actions + everything below   |
-| operator  | 1    | Drive the pipeline: RoE, sensing, run tools, run agents       |
-| viewer    | 0    | Read-only — engagements, findings, reports                    |
-
-The admin account is seeded from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` on first boot (idempotent — updating the env rotates the password).
-
-## Real vs simulated tool execution
-
-`TOOL_MODE` env controls the tool boundary:
-
-- `real` — always call the CLI binary (nmap/nikto/wpscan/…); raise if missing
-- `sim`  — always call the deterministic simulated adapter (safe, no network I/O)
-- `auto` — call real when the binary is installed, sim fallback (default)
-
-Every tool run is scope-checked against the signed RoE (`SEC-02`) before execution. Out-of-scope targets are refused server-side, no matter which mode is active.
-
-## Repo layout
-
-```
-.
-├── backend/                    FastAPI backend
-│   ├── server.py               entry — mounts routers, CORS, seed hooks
-│   ├── auth.py                 JWT auth + admin seeding
-│   ├── real_tools.py           subprocess adapters (nmap/nikto/wpscan/dirbust/sqlmap)
-│   ├── sim_tools.py            deterministic simulated adapters (fallback)
-│   ├── attack_path.py          7-layer ecosystem classifier + globe payload + SSE
-│   ├── orchestration.py        engagements, approvals, kill switch
-│   ├── model_gateway.py        Anthropic Claude via AWS Bedrock (boto3)
-│   ├── sensing.py              asset discovery (via tool boundary)
-│   ├── vuln_loop.py            CVE/KEV correlation + remediate/re-test
-│   ├── agent_runtime.py        offensive + defensive agent runs
-│   ├── reporting.py            JSON / HTML / PDF report
-│   ├── seed.py                 idempotent dogfood engagement + ecosystem enrichment
-│   └── tests/                  pytest suite
-├── frontend/                   React SPA
-│   ├── src/pages/tabs/         Attack Path, Console, Findings, Vuln, Audit, Report…
-│   └── nginx.conf              reverse-proxy + SSE-friendly buffering
-├── docker-compose.yml          local + prod stack (mongo + backend + frontend)
-├── .env.example
-├── deploy/
-│   ├── README.md               ← step-by-step AWS deployment guide
-│   ├── terraform/              single-EC2 Terraform
-│   └── cloudformation/         single-EC2 CloudFormation
-└── memory/
-    ├── PRD.md                  product requirements + iteration log
-    └── test_credentials.md     seeded creds (updated on env change)
+# Lint + types
+ruff check src tests
+mypy src
 ```
 
-## Security posture
+Copy `.env.example` to `.env` and set `FIREWORKS_API_KEY` to use real models;
+otherwise the gateway's deterministic mock backs completions.
 
-- All `/api/*` routes require a valid JWT (except `/api/auth/login`, `/api/auth/refresh`, `/api/health`, `/api/readiness`).
-- Cookies: `httponly + secure + samesite=lax`. Bearer token also accepted (`Authorization: Bearer …`).
-- SSE streams accept an `?token=` query param since browsers can't set headers on `EventSource`.
-- Passwords: bcrypt with per-user salt. 5 failed logins → 15-min lockout per (email, IP).
-- Audit chain is append-only + hash-chained; `GET /api/engagements/{id}/audit/verify` re-computes the chain and returns pass/fail.
-- Kill switch is a single-user-typed `HALT` confirmation that immediately halts all pending approvals and blocks further tool activity for the engagement (SEC-10).
+## Architecture
 
-## License
+The engine is a set of cooperating services around a shared **blackboard**.
+Agents don't call each other — they read/write findings to the store, and the
+Orchestrator coordinates who runs next. Any agent can crash and be retried;
+parallel agents never corrupt a linear handoff.
 
-Proprietary — internal use only.
+See [`docs/architecture.md`](docs/architecture.md) and the source-tree layout
+in `src/attack_engine/`.
 
----
+## Safety & authorization
 
-**8pi** · v1.0 · agentic purple-team ops
+This is an **authorized-use** purple-team tool. It refuses to operate outside a
+signed scope, rate-limits every target, sandboxes every tool in an ephemeral
+network-scoped container, and gates every real-world-effect action behind a
+human. Do not point it at systems you are not explicitly authorized to test.
+
+**Governance is RoE-authoritative.** Which actions require a human gate
+(exploit-confirm, apply-fix, containment) is decided by the human-signed RoE
+(`scope.roe.gated_actions`), not by an agent spec. An agent spec may *add*
+gates but can never remove a RoE-mandated one — a mis-authored or malicious
+spec cannot downgrade governance. The autonomous loop (`Orchestrator.run`)
+*proposes* fixes but never applies them; applying a change and re-testing
+(`Orchestrator.close_loop`) is a separate, gated step that never runs without a
+human. Both are enforced in code and covered by regression tests.

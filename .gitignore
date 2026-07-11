@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+
+# Local state / secrets
+.env
+*.local
+audit.db
+*.sqlite
+*.sqlite3
+/data/          # runtime audit/state dir at repo root (NOT package data dirs)
+/artifacts/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

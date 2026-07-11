@@ -1,0 +1,19 @@
+# Example signed engagement scope for the local ground-truth range.
+# Load with: attack-engine recon --scope examples/engagement-range.scope.yaml 10.5.0.10
+engagement_id: engagement-range
+allowed_cidrs:
+  - "10.5.0.0/24"     # the range bridge network
+allowed_hosts:
+  - "juice.local"
+roe:
+  read_only: true
+  default_rate_limit:
+    requests_per_sec: 5
+    burst: 5
+  gated_actions:
+    - exploit_confirm
+    - apply_fix
+    - containment
+  max_total_tool_calls: 500
+authorized_by: "furqan@goldengateinnovations.com"
+signature: "REPLACE-WITH-REAL-SIGNATURE"   # a real deployment signs this

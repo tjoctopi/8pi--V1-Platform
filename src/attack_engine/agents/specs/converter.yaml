@@ -1,0 +1,17 @@
+# Converter — confirmed finding → proposed control (propose only). Spec §4 / §6.1.
+# Applying a change is gated (apply_fix); proposing is always safe.
+id: converter
+archetype: remediator
+goal: "Turn each confirmed finding into a proposed patch or ticket; never apply changes autonomously"
+model_tier: frontier          # routed via the BYOM gateway, never a fixed model
+tools: []                     # a remediator drives no security tool
+scope_ref: engagement-1723
+guardrails:
+  read_only_default: true
+  require_gate_before:
+    - apply_fix               # applying a proposed change requires a human
+stop_conditions:
+  max_findings: 500
+  max_runtime_sec: 3600
+  max_tool_calls: 1
+  on_out_of_scope: skip

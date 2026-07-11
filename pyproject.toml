@@ -1,0 +1,104 @@
+[project]
+name = "attack-engine"
+version = "0.1.0"
+description = "8π Coordinated Attack Engine — a coordinated, accuracy-first purple-team automation platform (BYOM)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "8pi.ai" }]
+keywords = ["security", "purple-team", "automation", "byom", "pentest"]
+
+dependencies = [
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "networkx>=3.3,<4",
+    "pyyaml>=6.0,<7",
+    "structlog>=24.1",
+    "typer>=0.12,<1",
+    "rich>=13.7",
+    "litellm>=1.44",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0,<6"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+neo4j = ["neo4j>=5.20,<6"]
+mlflow = ["mlflow>=2.14"]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.14",
+    "ruff>=0.5.0",
+    "mypy>=1.10",
+    "types-PyYAML>=6.0",
+    "fakeredis>=2.23",
+]
+all = ["attack-engine[redis,postgres,neo4j,mlflow,dev]"]
+
+[project.scripts]
+attack-engine = "attack_engine.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/attack_engine"]
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: tests that exercise real external infra (docker/redis/postgres)",
+    "slow: long-running tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["attack_engine"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+ignore = [
+    "B008",    # typer uses function calls in argument defaults
+    "RUF012",  # mutable class attrs (pydantic models legitimately use these)
+    "UP042",   # `class X(str, Enum)` is valid and explicit; keep it
+    "RUF022",  # __all__ is intentionally grouped by concern, not sorted
+    "RUF001", "RUF002", "RUF003",  # ambiguous-unicode (×, σ, — in prose): intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "B011", "E501", "ANN", "PTH", "TID", "SIM", "RUF059"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

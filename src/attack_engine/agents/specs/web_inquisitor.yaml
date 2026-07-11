@@ -1,0 +1,23 @@
+# Web Inquisitor — web surface + OWASP checks (read-only). Spec §4 / §6.1.
+id: web_inquisitor
+archetype: web_tool_driver
+goal: "Enumerate and safely surface OWASP-class issues on in-scope web hosts"
+model_tier: frontier          # routed via the BYOM gateway, never a fixed model
+tools:
+  - nuclei          # templated OWASP checks (breadth)
+  - nikto           # web server misconfig / known issues
+  - wpscan          # WordPress enumeration
+  - katana          # crawler → parameterised endpoints (injection leads)
+  - dalfox          # reflected-XSS discovery
+  - http_probe      # read-only injection screening (breachability detection)
+  - burp_enterprise # LICENSED web scanner — refused unless RoE enables it
+scope_ref: engagement-1723
+guardrails:
+  read_only_default: true
+  require_gate_before:
+    - exploit_confirm         # any confirmation step is gated
+stop_conditions:
+  max_findings: 500
+  max_runtime_sec: 3600
+  max_tool_calls: 200
+  on_out_of_scope: halt
