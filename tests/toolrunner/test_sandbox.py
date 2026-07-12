@@ -59,6 +59,21 @@ class TestDockerSandbox:
         assert "attack-engine/nmap" in cmd
         assert cmd[-3:] == ["nmap", "-F", "10.0.4.12"]
 
+    def test_cap_drop_default_and_opt_out(self) -> None:
+        sb = DockerSandbox()
+        # Default: all capabilities dropped.
+        locked = sb._build_command(SandboxSpec(image="img", argv=["t"]))
+        assert locked[locked.index("--cap-drop") + 1] == "ALL"
+        # Opt-out (e.g. Metasploit's musl Ruby): no cap-drop, but every OTHER
+        # control stays — read-only, no-new-privileges, tmpfs.
+        relaxed = sb._build_command(
+            SandboxSpec(image="img", argv=["t"], drop_all_caps=False)
+        )
+        assert "--cap-drop" not in relaxed
+        assert "--read-only" in relaxed
+        assert "no-new-privileges" in relaxed
+        assert any(a.startswith("/tmp:") for a in relaxed)
+
     def test_env_passthrough(self) -> None:
         sb = DockerSandbox()
         cmd = sb._build_command(

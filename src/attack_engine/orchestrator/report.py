@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..attack.catalog import technique_for_finding_type
 from ..intel.surface import AttackSurface
-from ..killchain.plan import _TECHNIQUE_BY_TYPE, KillChainPlan
+from ..killchain.plan import KillChainPlan
 from ..schemas.common import StrictModel, iso_now
 from ..schemas.findings import VULN_TYPE_PREFIXES, Finding, FindingState, Priority
 from ..schemas.remediation import Remediation, RetestResult
@@ -124,7 +125,7 @@ def build_breach_verdict(
         reachable = chain.reachable if chain is not None else f.reachable
         if not reachable:
             continue  # a vector we cannot reach is not a breach path
-        technique = str(f.metadata.get("technique") or _TECHNIQUE_BY_TYPE.get(f.type, "T1190"))
+        technique = str(f.metadata.get("technique") or technique_for_finding_type(f.type))
         footholds.append(
             BreachFoothold(
                 asset=f.asset,

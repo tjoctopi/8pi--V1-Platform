@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from ..eventbus.base import EventPublisher
 from ..gateway.router import ModelGateway
 from ..governance.audit import AuditLog
+from ..governance.authorization import KillSwitch
 from ..governance.gates import HumanGate
 from ..knowledge.store import KnowledgeStore
 from ..schemas.scope import Scope
@@ -35,6 +36,9 @@ class AgentContext:
     #: agents. When a gated action is attempted without a gate, the agent fails
     #: closed.
     gate: HumanGate | None = None
+    #: Operator halt flag for autonomous runs. When tripped, agents stop before
+    #: their next controlled action / tool call. Absent ⇒ never tripped.
+    kill_switch: KillSwitch | None = None
 
     @property
     def engagement_id(self) -> str:

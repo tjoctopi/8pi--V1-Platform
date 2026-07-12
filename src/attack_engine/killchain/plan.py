@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from ..attack.catalog import technique_for_finding_type
 from ..knowledge.store import KnowledgeStore
 from ..schemas.common import StrictModel
 from ..schemas.findings import FindingState, Priority
@@ -29,14 +30,6 @@ class KillChainPhase(str, Enum):
 
 #: Every impact phase requires a human gate (kill-chain diagram, steps 4–7).
 GATED_PHASES = frozenset(KillChainPhase)
-
-_TECHNIQUE_BY_TYPE = {
-    "path-traversal": "T1190",
-    "command-injection": "T1059",
-    "ssti": "T1221",
-    "sqli-boolean-blind": "T1190",
-    "default-cred": "T1078",
-}
 
 #: Which tools a gated step *would* use, for the plan/report — purely
 #: informational labels. The engine does not autonomously run post-exploitation
@@ -81,7 +74,9 @@ class KillChainPlan(StrictModel):
         lines = [f"**Objective {self.goal}** — {status}, cost {self.total_cost:.1f}", ""]
         for i, s in enumerate(self.steps, 1):
             tag = "confirmed" if s.confirmed else "planned"
-            gate = " [HUMAN GATE]" if s.gated else ""
+            # Impact-class phases gate to a human UNLESS the signed RoE
+            # pre-authorized them at the engagement boundary (autonomy tier ≥ 1).
+            gate = " [impact — gated unless authorized]" if s.gated else ""
             lines.append(
                 f"{i}. **{s.phase.value}** ({s.technique}, {tag}){gate}: "
                 f"{s.from_position} → {s.to_position} — {s.name}"
@@ -109,7 +104,7 @@ def build_privilege_graph(
     ]
     foothold_hosts: set[str] = set()
     for f in confirmed:
-        technique = str(f.metadata.get("technique") or _TECHNIQUE_BY_TYPE.get(f.type, "T1190"))
+        technique = str(f.metadata.get("technique") or technique_for_finding_type(f.type))
         # Confirmed initial access: entry → (host, user).
         graph.add_exploit(ExploitEdge(
             src=ENTRY, dst=(f.asset, "user"), technique=technique,

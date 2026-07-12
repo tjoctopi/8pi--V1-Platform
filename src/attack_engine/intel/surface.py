@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from ..killchain.plan import _TECHNIQUE_BY_TYPE
+from ..attack.catalog import technique_for_finding_type
 from ..knowledge.store import KnowledgeStore
 from ..schemas.common import StrictModel, iso_now
 from ..schemas.findings import Finding, FindingState, Priority
+from .corroborate import CONFIRMED, REPORTED, UNCONFIRMED, corroborate, tech_vocabulary
 
 # --- offensive classification --------------------------------------------------
 
@@ -129,6 +130,27 @@ class ExposedItem(StrictModel):
     why: str
 
 
+class ObservationIntel(StrictModel):
+    """A scanner observation with a corroboration confidence (false-positive gate)."""
+
+    name: str
+    template_id: str
+    severity: str
+    #: "corroborated" | "unconfirmed" | "reported" — see intel.corroborate.
+    confidence: str = REPORTED
+    reason: str = ""
+
+
+class ToolHealth(StrictModel):
+    """Per-tool coverage tally — so ``0 leads`` is honest about tool failures."""
+
+    tool: str
+    runs: int = 0
+    degraded: int = 0
+    skipped: int = 0
+    last_error: str = ""
+
+
 class AssetIntel(StrictModel):
     address: str
     reachable: bool
@@ -137,8 +159,10 @@ class AssetIntel(StrictModel):
     endpoints: list[EndpointIntel] = []
     attack_leads: list[AttackLead] = []
     exposed_items: list[ExposedItem] = []
-    #: severity → observation names (nuclei/nikto/wpscan informational signal).
-    observations: dict[str, list[str]] = {}
+    #: Scanner observations, each carrying a corroboration confidence.
+    observations: list[ObservationIntel] = []
+    #: What fronts the asset, if a CDN/WAF was fingerprinted.
+    edge: str | None = None
     cves: list[str] = []
 
 
@@ -148,6 +172,8 @@ class AttackSurface(StrictModel):
     assets: list[AssetIntel] = []
     total_leads: int = 0
     confirmed_leads: int = 0
+    #: Engagement-wide tool coverage (which scanners ran / degraded / were skipped).
+    coverage: list[ToolHealth] = []
 
     def to_markdown(self) -> str:
         lines: list[str] = [
@@ -169,6 +195,9 @@ class AttackSurface(StrictModel):
                 lines.append("")
             if a.technologies:
                 lines += [f"**Technology:** {', '.join(a.technologies)}", ""]
+            if a.edge:
+                lines += [f"**Edge:** {a.edge} — strategy adapted "
+                          "(focused templates, lead-gated fuzzing)", ""]
 
             if a.attack_leads:
                 lines.append("**Attack leads** (offensive layer targets)")
@@ -204,12 +233,23 @@ class AttackSurface(StrictModel):
                 lines += [f"**CVEs:** {', '.join(a.cves)}", ""]
 
             if a.observations:
+                confirmed = [o for o in a.observations if o.confidence == CONFIRMED]
+                unconfirmed = [o for o in a.observations if o.confidence == UNCONFIRMED]
+                reported = [o for o in a.observations if o.confidence == REPORTED]
                 lines.append("**Observations**")
-                for sev in ("critical", "high", "medium", "low", "info", "unknown"):
-                    names = a.observations.get(sev)
-                    if names:
-                        lines.append(f"- _{sev}_: {', '.join(sorted(set(names)))}")
+                for o in _obs_by_severity(confirmed):
+                    lines.append(f"- _{o.severity}_ (corroborated): {o.name}")
+                for o in _obs_by_severity(reported):
+                    lines.append(f"- _{o.severity}_: {o.name}")
+                if unconfirmed:
+                    lines.append("- ⚠️ _unconfirmed_ (single-source scanner match, "
+                                 "no corroborating fingerprint — do not treat as a "
+                                 "confirmed finding):")
+                    for o in _obs_by_severity(unconfirmed):
+                        lines.append(f"    - _{o.severity}_: {o.name}")
                 lines.append("")
+
+        lines += _coverage_markdown(self.coverage)
         return "\n".join(lines)
 
 
@@ -291,7 +331,8 @@ def build_attack_surface(store: KnowledgeStore) -> AttackSurface:
         endpoints: dict[tuple[str, str], EndpointIntel] = {}
         leads: list[AttackLead] = []
         exposed: list[ExposedItem] = []
-        observations: dict[str, list[str]] = defaultdict(list)
+        raw_obs: list[tuple[str, str, str]] = []  # (name, template_id, severity)
+        edge_desc: str | None = None
         cves: list[str] = []
 
         for f in findings:
@@ -327,9 +368,20 @@ def build_attack_surface(store: KnowledgeStore) -> AttackSurface:
                     path=path, params=params, method=method, source="katana")
                 continue
 
+            # Edge (CDN/WAF) fingerprint.
+            if ftype.startswith("web-edge:"):
+                md = f.metadata
+                kinds = "/".join(
+                    k for k, on in (("CDN", md.get("is_cdn")), ("WAF", md.get("is_waf")))
+                    if on
+                )
+                edge_desc = f"{md.get('vendor') or 'unknown'} {kinds}".strip()
+                continue
+
             # Nuclei / nikto / wpscan observations.
             if ftype.startswith(("web:", "web-observation:")):
-                observations[_severity_of(f)].append(f.title or ftype)
+                template_id = ftype.split(":", 1)[1] if ":" in ftype else ftype
+                raw_obs.append((f.title or ftype, template_id, _severity_of(f)))
                 continue
 
             # Attack leads (vulnerabilities + CVEs).
@@ -340,7 +392,7 @@ def build_attack_surface(store: KnowledgeStore) -> AttackSurface:
                 lead = AttackLead(
                     vuln_class=klass, location=loc, param=param, method=method,
                     technique=str(f.metadata.get("technique")
-                                  or _TECHNIQUE_BY_TYPE.get(ftype, "T1190")),
+                                  or technique_for_finding_type(ftype)),
                     status=status, exploit_prob=f.exploit_prob, on_kev=f.on_kev,
                     suggested_action=_SUGGESTED_ACTION.get(klass, ""),
                     evidence=list(f.evidence), finding_id=f.id,
@@ -364,13 +416,22 @@ def build_attack_surface(store: KnowledgeStore) -> AttackSurface:
         total_leads += len(leads)
         confirmed_leads += sum(1 for ld in leads if ld.status == "confirmed")
 
+        # Corroboration gate: a high/critical observation keeps its severity only
+        # if the asset's own fingerprint backs it; otherwise it is unconfirmed.
+        vocab = tech_vocabulary(" ".join(
+            [*technologies]
+            + [x or "" for s in services
+               for x in (s.name, s.product, s.version, s.banner)]
+        ))
+        observations = _corroborated_observations(raw_obs, vocab)
+
         assets.append(AssetIntel(
             address=asset.address, reachable=reachable, services=services,
             technologies=sorted(set(technologies)),
             endpoints=sorted(endpoints.values(), key=lambda e: e.path),
             attack_leads=leads,
             exposed_items=_dedup_exposed(exposed),
-            observations=dict(observations), cves=sorted(set(cves)),
+            observations=observations, edge=edge_desc, cves=sorted(set(cves)),
         ))
 
     # Assets with the most actionable leads first.
@@ -378,7 +439,71 @@ def build_attack_surface(store: KnowledgeStore) -> AttackSurface:
     return AttackSurface(
         engagement_id=store.engagement_id, generated_at=iso_now(),
         assets=assets, total_leads=total_leads, confirmed_leads=confirmed_leads,
+        coverage=_build_coverage(store),
     )
+
+
+_SEVERITY_ORDER = ("critical", "high", "medium", "low", "info", "unknown")
+
+
+def _obs_by_severity(obs: list[ObservationIntel]) -> list[ObservationIntel]:
+    rank = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
+    return sorted(obs, key=lambda o: (rank.get(o.severity, len(_SEVERITY_ORDER)), o.name))
+
+
+def _corroborated_observations(
+    raw_obs: list[tuple[str, str, str]], tech_tokens: set[str]
+) -> list[ObservationIntel]:
+    seen: set[tuple[str, str]] = set()
+    out: list[ObservationIntel] = []
+    for name, template_id, severity in raw_obs:
+        key = (template_id, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        confidence, reason = corroborate(
+            name=name, template_id=template_id, severity=severity,
+            tech_tokens=tech_tokens,
+        )
+        out.append(ObservationIntel(
+            name=name, template_id=template_id, severity=severity,
+            confidence=confidence, reason=reason,
+        ))
+    return out
+
+
+def _build_coverage(store: KnowledgeStore) -> list[ToolHealth]:
+    """Aggregate per-tool run outcomes into a coverage report."""
+
+    getter = getattr(store, "tool_runs", None)
+    if getter is None:
+        return []
+    by_tool: dict[str, ToolHealth] = {}
+    for rec in getter():
+        h = by_tool.setdefault(rec.tool, ToolHealth(tool=rec.tool))
+        h.runs += 1
+        if rec.outcome == "degraded":
+            h.degraded += 1
+            h.last_error = rec.detail
+        elif rec.outcome == "skipped":
+            h.skipped += 1
+    return sorted(by_tool.values(), key=lambda h: (-h.degraded, h.tool))
+
+
+def _coverage_markdown(coverage: list[ToolHealth]) -> list[str]:
+    if not coverage:
+        return []
+    degraded = [h for h in coverage if h.degraded]
+    lines = ["## Coverage / tool health", ""]
+    if degraded:
+        lines.append("⚠️ Some scanners degraded — a `0 leads` result below is a "
+                     "coverage gap, not a clean bill of health:")
+    lines += ["", "| Tool | Runs | Degraded | Skipped |", "|---|---|---|---|"]
+    for h in coverage:
+        flag = " ⚠️" if h.degraded else ""
+        lines.append(f"| {h.tool}{flag} | {h.runs} | {h.degraded} | {h.skipped} |")
+    lines.append("")
+    return lines
 
 
 def _int_or_none(v: object) -> int | None:

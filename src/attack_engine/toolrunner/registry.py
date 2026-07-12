@@ -52,13 +52,16 @@ def default_registry() -> ToolRegistry:
     SQLMap wrapper.
     """
 
+    from .wrappers.bloodhound import BloodHoundWrapper
     from .wrappers.dalfox import DalfoxWrapper
     from .wrappers.discovery import AmassWrapper, SearchsploitWrapper, SubfinderWrapper
     from .wrappers.httpx import HttpxWrapper
     from .wrappers.katana import KatanaWrapper
+    from .wrappers.kerberoast import KerberoastWrapper
     from .wrappers.licensed import BurpEnterpriseWrapper, NessusWrapper
     from .wrappers.masscan import MasscanWrapper
     from .wrappers.metasploit import MetasploitCheckWrapper
+    from .wrappers.metasploit_exploit import MetasploitExploitWrapper
     from .wrappers.nikto import NiktoWrapper
     from .wrappers.nuclei import NucleiWrapper
     from .wrappers.sqlmap import SqlmapConfirmWrapper
@@ -83,6 +86,11 @@ def default_registry() -> ToolRegistry:
     # Exploit confirmation (gated; SQLMap read-only-confirm, Metasploit check-only+mutating).
     reg.register(SqlmapConfirmWrapper())
     reg.register(MetasploitCheckWrapper())
+    # Real exploitation (mutating; establishes a session foothold).
+    reg.register(MetasploitExploitWrapper())
+    # Active Directory / identity attacks (O5): collection + credential access.
+    reg.register(BloodHoundWrapper())
+    reg.register(KerberoastWrapper())
     # Licensed/commercial — registered but refused unless RoE enables them.
     reg.register(NessusWrapper())
     reg.register(BurpEnterpriseWrapper())

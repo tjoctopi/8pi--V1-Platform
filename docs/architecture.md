@@ -1,4 +1,9 @@
-# Architecture
+# Architecture (legacy note)
+
+> **This is an earlier (Sprint-2 era) sketch.** The current, complete
+> documentation lives in the numbered set starting at [README.md](README.md) —
+> see [01-architecture.md](01-architecture.md) for the up-to-date architecture
+> with Mermaid diagrams. This file is kept for historical context.
 
 The engine is a set of cooperating services around a shared **blackboard**.
 Agents never call each other directly — they read and write findings to the

@@ -23,6 +23,7 @@ from ..logging import get_logger
 from ..schemas.events import Event, EventType
 from ..schemas.findings import Asset, Finding, FindingState, Priority, Service
 from ..schemas.remediation import Remediation
+from ..schemas.tools import ToolRunRecord
 from .dedup import DedupIndex
 from .graph import AttackGraph
 from .graph_backend import GraphBackend
@@ -75,6 +76,7 @@ class KnowledgeStore:
         self._assets_by_id: dict[str, Asset] = {}
         self._findings: dict[str, Finding] = {}
         self._remediations: dict[str, Remediation] = {}
+        self._tool_runs: list[ToolRunRecord] = []
         self._lock = threading.RLock()
 
     @property
@@ -281,6 +283,62 @@ class KnowledgeStore:
         if finding_id is None:
             return values
         return [r for r in values if r.finding_id == finding_id]
+
+    # --- tool coverage --------------------------------------------------------
+
+    def record_tool_run(
+        self, tool: str, target: str, outcome: str, detail: str = ""
+    ) -> None:
+        """Tally one tool invocation's outcome for the coverage report.
+
+        ``outcome`` is "ok" | "empty" | "degraded" | "skipped". This is how the
+        dossier distinguishes "0 leads because the surface is clean" from "0
+        leads because a scanner timed out" — a coverage gap the operator must see.
+        """
+
+        with self._lock:
+            self._tool_runs.append(
+                ToolRunRecord(tool=tool, target=target, outcome=outcome, detail=detail)
+            )
+
+    def tool_runs(self) -> list[ToolRunRecord]:
+        with self._lock:
+            return list(self._tool_runs)
+
+    # --- cross-run persistence ------------------------------------------------
+
+    def export_assets(self) -> list[dict[str, object]]:
+        """Serialise the asset/service inventory for cross-run continuity.
+
+        Only *assets and services* are persisted — deterministic facts that are
+        safe to union across runs. Findings are intentionally NOT persisted:
+        they are re-derived every run so the propose→verify→confirm discipline
+        (rule #1) starts clean and stale state can never be mistaken for fresh
+        confirmation.
+        """
+
+        with self._lock:
+            return [a.model_dump(mode="json") for a in self._assets_by_address.values()]
+
+    def import_assets(
+        self, records: list[dict[str, object]], *, emitted_by: str = "prior-run"
+    ) -> int:
+        """Re-ingest a prior run's asset inventory, merging services.
+
+        Returns the number of asset records ingested. Reuses :meth:`add_asset`,
+        so service-level merge and reachability wiring behave identically to a
+        live discovery — a port seen only in an earlier run survives into this one.
+        """
+
+        count = 0
+        for rec in records:
+            try:
+                asset = Asset.model_validate({**rec, "engagement_id": self.engagement_id})
+            except (ValueError, TypeError):
+                continue
+            self.add_asset(asset, emitted_by=emitted_by)
+            count += 1
+        return count
 
     def stats(self) -> dict[str, int]:
         with self._lock:

@@ -64,6 +64,31 @@ class RulesOfEngagement(StrictModel):
     #: Empty ⇒ no licensed tool may run (the safe default).
     licensed_tools_enabled: frozenset[str] = Field(default_factory=frozenset)
 
+    # --- engagement-boundary authorization (autonomy) -----------------------
+    #: How autonomously agents may act *within* the authorized scope:
+    #:   0 — gate every controlled action (default; a scanner that asks each time)
+    #:   1 — autonomous in an owned range (approve the run, then hands off)
+    #:   2 — autonomous in an authorized customer scope
+    #:   3 — continuous / always-on
+    #: Tiers >0 pre-authorize aggression at the ENGAGEMENT boundary instead of
+    #: per action — the shift that turns a scanner into an adversary. They take
+    #: effect only when the scope is signed and unexpired; otherwise the engine
+    #: falls back to gating (fail-safe).
+    autonomy_tier: int = Field(default=0, ge=0, le=3)
+    #: Actions/techniques (action names or MITRE ATT&CK ids) the signed RoE
+    #: pre-authorizes to run autonomously at tier ≥ 1. Anything not listed still
+    #: gates — authorization is an explicit allowlist, never implicit.
+    authorized_techniques: frozenset[str] = Field(default_factory=frozenset)
+    #: Actions that ALWAYS require a human gate, even at tier ≥ 1 — the short,
+    #: explicit high-impact list: destructive, production-data-touching, or
+    #: real-world-effect actions. These can never be pre-authorized away.
+    high_impact_actions: frozenset[str] = Field(
+        default_factory=lambda: frozenset({
+            "apply_fix", "containment", "data_destruction", "dos",
+            "exfiltration", "prod_data_access",
+        })
+    )
+
 
 class Scope(StrictModel):
     """The complete, signed scope of one engagement.

@@ -135,6 +135,32 @@ class TestFindings:
         assert len(store.findings(FindingState.VERIFIED)) == 1
 
 
+class TestToolCoverage:
+    def test_record_and_read_tool_runs(self, store) -> None:
+        store.record_tool_run("nmap", "10.0.4.12", "ok")
+        store.record_tool_run("dalfox", "10.0.4.12", "degraded", "timeout after 600s")
+        runs = store.tool_runs()
+        assert len(runs) == 2
+        degraded = [r for r in runs if r.outcome == "degraded"]
+        assert degraded[0].tool == "dalfox" and "timeout" in degraded[0].detail
+
+
+class TestCrossRunMerge:
+    def test_export_import_unions_services(self, store) -> None:
+        # Prior run saw port 81; this run's fresh store only saw 80.
+        prior = store  # stand-in for a previous engagement store
+        prior.add_asset(asset("10.0.4.12", [80, 81]))
+        exported = prior.export_assets()
+
+        from attack_engine.knowledge.store import KnowledgeStore
+        fresh = KnowledgeStore("eng-1")
+        fresh.add_asset(asset("10.0.4.12", [80]))
+        n = fresh.import_assets(exported)
+        assert n == 1
+        ports = {s.port for a in fresh.assets() for s in a.services}
+        assert ports == {80, 81}  # port 81 from the prior run survived
+
+
 def test_stats_snapshot(store) -> None:
     store.add_asset(asset("10.0.4.12", [80, 443]))
     store.propose_finding(Finding(engagement_id="eng-1", asset="10.0.4.12", type="x"))

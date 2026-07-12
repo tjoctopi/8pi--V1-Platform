@@ -49,3 +49,36 @@ services:
     networks:
       range_net:
         ipv4_address: 10.5.0.12
+
+  # Samba Active Directory DC — a Linux AD forest for identity attacks (O5/O6):
+  # LDAP + Kerberos so BloodHound collection and Kerberoasting have a target.
+  # Domain: CORP.LOCAL. Bring up with `--profile ad` (heavier than the others).
+  ad-dc:
+    image: ghcr.io/dockur/samba-domain:latest
+    container_name: ae-ad-dc
+    profiles: ["ad"]
+    restart: unless-stopped
+    environment:
+      DOMAIN: "CORP.LOCAL"
+      DOMAINPASS: "R4ngePass!"        # range-only DA password (never reuse)
+      HOSTIP: "10.5.0.20"
+      INSECURE: "true"                # weak defaults on purpose — it's a range
+    cap_add: ["NET_ADMIN"]
+    networks:
+      range_net:
+        ipv4_address: 10.5.0.20
+
+  # Persistent C2 / reverse-shell listener (O2/O3): a long-running Metasploit
+  # RPC daemon that catches and HOLDS sessions across tool runs. Reverse-shell
+  # exploits set LHOST=10.5.0.30 (the engagement's configured C2 listener).
+  c2-server:
+    image: metasploitframework/metasploit-framework:latest
+    container_name: ae-c2-server
+    profiles: ["c2"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "./msfrpcd -P R4ngeRpc! -S -a 0.0.0.0 -p 55553 && tail -f /dev/null"
+    networks:
+      range_net:
+        ipv4_address: 10.5.0.30

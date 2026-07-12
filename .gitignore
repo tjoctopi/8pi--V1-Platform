@@ -23,7 +23,9 @@ coverage.xml
 audit.db
 *.sqlite
 *.sqlite3
-/data/          # runtime audit/state dir at repo root (NOT package data dirs)
+# runtime audit/state dir at repo root (NOT package data dirs). Note: .gitignore
+# does NOT support inline comments — the rule must be on its own line.
+/data/
 /artifacts/
 
 # Editor / OS

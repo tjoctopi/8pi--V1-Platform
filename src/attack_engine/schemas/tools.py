@@ -48,6 +48,21 @@ class ToolProfile(StrictModel):
         return args
 
 
+class ToolRunRecord(StrictModel):
+    """A lightweight tally of one tool invocation's *outcome* (for coverage).
+
+    Distinct from :class:`ToolResult` (the full-fidelity result): this records
+    only whether a tool ran cleanly, produced nothing, or degraded — so the
+    dossier can say *why* leads are zero (clean vs. a scanner that timed out).
+    """
+
+    tool: str
+    target: str
+    #: "ok" | "empty" | "degraded" | "skipped"
+    outcome: str
+    detail: str = ""
+
+
 class ToolResult(StrictModel):
     """Full-fidelity outcome of one tool invocation (rule #2 boundary output).
 

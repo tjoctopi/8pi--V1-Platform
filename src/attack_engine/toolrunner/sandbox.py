@@ -42,6 +42,13 @@ class SandboxSpec:
     #: docker volume name. Used to supply wordlists / template sets to tools
     #: without loosening the read-only root fs. Always mounted ``:ro``.
     mounts: tuple[tuple[str, str], ...] = ()
+    #: Drop ALL Linux capabilities (the hardened default). A few tools genuinely
+    #: can't run this way — e.g. the Metasploit framework's Alpine/musl Ruby
+    #: interpreter fails to ``execve`` under ``--cap-drop ALL``. Such a tool sets
+    #: this False to use Docker's default (already reduced) capability set; every
+    #: OTHER control — read-only root, no-new-privileges, tmpfs, network scope,
+    #: pids-limit, audit — is unchanged.
+    drop_all_caps: bool = True
 
 
 @dataclass(frozen=True)
@@ -143,7 +150,6 @@ class DockerSandbox(Sandbox):
             "--entrypoint", "",
             "--network", spec.network,
             "--read-only",
-            "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "--pids-limit", "256",
             # Read-only root fs, but tools still need scratch space. A capped,
@@ -152,6 +158,10 @@ class DockerSandbox(Sandbox):
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m,mode=1777",
             "--env", "HOME=/tmp",
         ]
+        # Drop every capability by default; a tool that needs the default set
+        # (see SandboxSpec.drop_all_caps) opts out — nothing else is loosened.
+        if spec.drop_all_caps:
+            cmd += ["--cap-drop", "ALL"]
         for source, target in spec.mounts:
             cmd += ["-v", f"{source}:{target}:ro"]  # always read-only
         if self._runtime:

@@ -21,3 +21,7 @@ class VerifyContext:
     tool_runner: ToolRunner
     store: KnowledgeStore
     audit: AuditLog
+    #: The C2 reverse-shell listener LHOST (O3), if one is stood up. Exploit
+    #: modules that use a reverse payload fall back to this when a finding has no
+    #: explicit LHOST — so autonomous reverse-shell exploitation has a callback.
+    listener_lhost: str | None = None

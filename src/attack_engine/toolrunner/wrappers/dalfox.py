@@ -19,7 +19,11 @@ from .base import ToolWrapper
 class DalfoxWrapper(ToolWrapper):
     name = "dalfox"
     default_image = "hahwul/dalfox:latest"
-    default_timeout_sec = 600
+    # A single-URL reflection test should be quick. The old 600s default meant a
+    # rate-limited/WAF'd edge burned a full 10 minutes hitting the ceiling before
+    # degrading. 180s is ample for a real reflected-XSS test and caps the waste;
+    # the web agent lowers it further (and lead-gates dalfox) behind a CDN/WAF.
+    default_timeout_sec = 180
 
     @staticmethod
     def _url(target: str, profile: ToolProfile) -> str:

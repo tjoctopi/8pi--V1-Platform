@@ -104,6 +104,8 @@ def intel(
     it enumerates injection points as leads without probing them (``--passive``).
     """
 
+    import json
+
     from .agents.loader import load_spec
     from .intel.surface import build_attack_surface
 
@@ -115,6 +117,18 @@ def intel(
         f"[bold]Intel[/] {scope.engagement_id} · provider={engine.gateway.provider_name} "
         f"· sandbox={engine.sandbox.name} · mode={'active' if active else 'passive'}"
     )
+
+    # Cross-run continuity: union this engagement's asset/service inventory from
+    # any prior run so a port seen only last time (e.g. 81 in passive) survives.
+    snapshot = Path("data/engagements") / f"{scope.engagement_id}.json"
+    if snapshot.exists():
+        try:
+            prior = json.loads(snapshot.read_text())
+            n = engagement.store.import_assets(prior.get("assets", []))
+            if n:
+                console.print(f"[dim]merged {n} asset record(s) from a prior run[/]")
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
 
     # 1. Recon → assets/services/paths. 2. Verify+correlate → CVE leads from versions.
     engagement.run_agent(load_spec(_DEFAULT_SPEC), list(targets))
@@ -140,11 +154,22 @@ def intel(
     surface = build_attack_surface(engagement.store)
     if markdown:
         console.print(surface.to_markdown())
+
+    # Persist the asset inventory for the next run's cross-run merge.
+    try:
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(json.dumps({"assets": engagement.store.export_assets()}))
+    except OSError:
+        pass
+
+    degraded = sum(h.degraded for h in surface.coverage)
+    degraded_note = f" · [yellow]{degraded} tool run(s) degraded[/]" if degraded else ""
     console.print(
         f"\n[bold]Dossier:[/] assets={len(surface.assets)} "
         f"leads={surface.total_leads} ([red]{surface.confirmed_leads} confirmed[/]) "
         f"· audit entries={len(engine.audit)} "
         f"chain_intact={'[green]yes[/]' if engine.audit.verify() else '[red]NO[/]'}"
+        f"{degraded_note}"
     )
 
 
@@ -324,6 +349,121 @@ def engage(
         f"[bold]Audit:[/] entries={report.audit_entries} "
         f"chain_intact={'[green]yes[/]' if report.audit_intact else '[red]NO[/]'}"
     )
+
+
+@app.command()
+def campaign(
+    scope_file: Path = typer.Option(..., "--scope", "-s", help="Signed engagement scope YAML."),
+    targets: list[str] = typer.Argument(..., help="Entry targets (IP/host)."),
+    objective: str = typer.Option(..., "--objective", help="HOST[:PRIVILEGE] e.g. 10.5.0.99:root"),
+    profile: str = typer.Option(
+        "web-opportunist", "--profile", help="Adversary profile id or YAML path."
+    ),
+    require_signed: bool = typer.Option(
+        True, help="Refuse an unsigned scope (default on for campaigns)."
+    ),
+    markdown: bool = typer.Option(
+        True, "--markdown/--no-markdown", help="Print the campaign report."
+    ),
+) -> None:
+    """Run an autonomous, objective-directed campaign (O1).
+
+    Drives recon → confirm → plan → advance toward the objective autonomously
+    *within the signed authorization*, gating only high-impact actions. The
+    adversary ``--profile`` declares the TTPs; the RoE's ``autonomy_tier`` +
+    ``authorized_techniques`` decide what actually runs without a human. Steps
+    needing offensive capabilities not yet built are reported as pending.
+    """
+
+    from pathlib import Path as _Path
+
+    from .orchestrator.campaign import CampaignRunner, Objective
+    from .orchestrator.profiles import BUILTIN_PROFILES, get_profile, load_profile
+
+    adversary = (
+        load_profile(profile) if _Path(profile).exists()
+        else get_profile(profile) if profile in BUILTIN_PROFILES
+        else None
+    )
+    if adversary is None:
+        console.print(f"[red]Unknown profile '{profile}'.[/] Built-ins: "
+                      f"{', '.join(BUILTIN_PROFILES)} (or pass a YAML path).")
+        raise typer.Exit(2)
+
+    host, _, priv = objective.partition(":")
+    obj = Objective(host=host, privilege=priv or "root")
+
+    engine = Engine.from_settings()
+    scope = load_scope(scope_file)
+    engagement = engine.engagement(scope, require_signed=require_signed)
+    console.print(
+        f"[bold]Campaign[/] {scope.engagement_id} · objective={obj.label()} · "
+        f"adversary='{adversary.name}' · tier={scope.roe.autonomy_tier} · "
+        f"provider={engine.gateway.provider_name}"
+    )
+
+    result = CampaignRunner(engagement, adversary).run(list(targets), obj)
+
+    banner = "red" if result.reached else "yellow"
+    console.print(
+        f"\n[bold {banner}]{'⚑ OBJECTIVE REACHED' if result.reached else '◦ objective not reached'}"
+        f" — {result.objective}[/]  ({result.iterations} iteration(s))"
+    )
+    console.print(
+        f"[bold]Autonomy:[/] {result.autonomous_actions} autonomous · "
+        f"{result.gated_actions} gated · footholds={result.confirmed_footholds}"
+    )
+    if result.unauthorized_techniques:
+        console.print(f"[yellow]Profile TTPs not authorized by RoE (will gate):[/] "
+                      f"{', '.join(result.unauthorized_techniques)}")
+    if result.pending_capabilities:
+        console.print("[bold]Pending capabilities:[/]")
+        for p in result.pending_capabilities:
+            console.print(f"   [dim]•[/] {p}")
+    console.print(
+        f"[bold]Audit:[/] chain_intact="
+        f"{'[green]yes[/]' if result.audit_intact else '[red]NO[/]'}"
+    )
+    if markdown:
+        console.print("\n" + result.to_markdown())
+
+
+@app.command()
+def coverage(markdown: bool = typer.Option(True, "--markdown/--no-markdown")) -> None:
+    """Show the platform's MITRE ATT&CK coverage matrix (available vs planned)."""
+
+    from .attack import build_coverage, build_library
+
+    report = build_coverage(build_library())
+    if markdown:
+        console.print(report.to_markdown())
+    console.print(
+        f"[bold]ATT&CK coverage:[/] [green]{report.available_count} available[/] · "
+        f"{report.planned_count} planned · {report.total} techniques mapped"
+    )
+
+
+@app.command()
+def profiles() -> None:
+    """List adversary-emulation profiles and how much of each we can emulate."""
+
+    from .attack import build_library
+    from .orchestrator.profiles import BUILTIN_PROFILES
+
+    lib = build_library()
+    table = Table(title="Adversary profiles (MITRE ATT&CK emulation)")
+    table.add_column("Profile", style="cyan")
+    table.add_column("Tier")
+    table.add_column("Kill chain (ATT&CK)")
+    table.add_column("Emulatable")
+    for prof in BUILTIN_PROFILES.values():
+        avail = [t for t in prof.kill_chain if (tech := lib.get(t)) and tech.available]
+        chain = " → ".join(prof.kill_chain)
+        table.add_row(
+            f"{prof.id}\n[dim]{prof.name}[/]", str(prof.autonomy_tier), chain,
+            f"{len(avail)}/{len(prof.kill_chain)}",
+        )
+    console.print(table)
 
 
 def _render_prioritized_from_report(report: EngagementReport) -> None:

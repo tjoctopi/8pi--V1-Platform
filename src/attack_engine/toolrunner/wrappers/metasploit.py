@@ -24,6 +24,9 @@ from ..sandbox import SandboxResult
 from .base import ToolWrapper
 
 _FORBIDDEN_ACTIONS = {"exploit", "run", "rexploit", "rerun", "to_handler"}
+#: msfconsole is not on PATH in the official image; invoke it by full path
+#: (the sandbox clears the image entrypoint).
+_MSFCONSOLE = "/usr/src/metasploit-framework/msfconsole"
 
 
 class MetasploitCheckWrapper(ToolWrapper):
@@ -45,7 +48,7 @@ class MetasploitCheckWrapper(ToolWrapper):
             setup.append(f"set RPORT {port}")
         setup += ["check", "exit"]
         resource = "; ".join(setup)
-        return ["msfconsole", "-q", "-x", resource]
+        return [_MSFCONSOLE, "-q", "-x", resource]
 
     def is_mutating(self, profile: ToolProfile) -> bool:
         # `check` probes the target; treat as mutating so read-only RoE blocks it.

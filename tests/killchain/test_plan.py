@@ -76,4 +76,5 @@ def test_markdown_render() -> None:
     store.add_asset(Asset(address="10.5.0.99", engagement_id="e"))
     md = KillChainPlanner(store).plan("10.5.0.99", "root").to_markdown()
     assert "Objective 10.5.0.99/root" in md
-    assert "HUMAN GATE" in md
+    # Impact phases are flagged as gated-unless-authorized in the plan.
+    assert "gated unless authorized" in md

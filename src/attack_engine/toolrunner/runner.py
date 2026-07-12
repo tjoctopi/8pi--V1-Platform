@@ -175,6 +175,7 @@ class ToolRunner:
             timeout_sec=wrapper.timeout_for(profile),
             network=self._network,
             mounts=tuple(wrapper.mounts(profile)),
+            drop_all_caps=wrapper.drop_all_caps,
         )
         self._emit(
             EventType.TOOL_STARTED,

@@ -169,4 +169,4 @@ class TestRateLimitRefusal:
 class TestRegistryErrors:
     def test_unknown_tool_raises(self, runner: ToolRunner) -> None:
         with pytest.raises(ToolNotRegisteredError):
-            runner.run("metasploit", "10.0.4.12")
+            runner.run("not-a-registered-tool", "10.0.4.12")

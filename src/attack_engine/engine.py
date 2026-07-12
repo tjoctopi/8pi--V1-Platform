@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 from .agents.base import Agent, AgentReport
 from .agents.context import AgentContext
 from .agents.loader import build_agent
+from .c2.backend import C2Backend
+from .c2.postex import PostExOperator
+from .c2.session import SessionManager
 from .config import Settings, get_settings
 from .correlate.feeds import CveFeed, LocalCveFeed
 from .correlate.matcher import ExploitabilityMatcher, MatchReport
@@ -38,6 +41,7 @@ from .eventbus.factory import build_event_bus
 from .gateway.router import ModelGateway
 from .governance.audit import AuditLog
 from .governance.audit_backends import build_audit_backend
+from .governance.authorization import KillSwitch
 from .governance.gates import HumanGate, Responder, deny_all
 from .knowledge.store import KnowledgeStore
 from .logging import configure_logging, get_logger
@@ -83,6 +87,9 @@ class Engagement:
     audit: AuditLog
     feed: CveFeed
     scorer: ExploitabilityScorer
+    #: C2 session/listener registry (O3) + the engagement kill switch (O0).
+    session_manager: SessionManager
+    kill_switch: KillSwitch
 
     def run_agent(self, spec: AgentSpec, targets: list[str]) -> AgentReport:
         agent: Agent = build_agent(spec, self.context, self.registry)
@@ -118,15 +125,17 @@ class Engagement:
         from .governance.gates import HumanGate
 
         registry = default_exploit_registry()
+        listener = self.session_manager.default_listener()
         ctx = VerifyContext(
             engagement_id=self.scope.engagement_id,
             tool_runner=self.tool_runner,
             store=self.store,
             audit=self.audit,
+            listener_lhost=listener.host if listener else None,
         )
         gate = self.context.gate or HumanGate(self.audit)  # None ⇒ deny-all
         runner = ExploitRunner(
-            registry, ctx, gate, event_bus=self.context.event_bus
+            registry, ctx, gate, event_bus=self.context.event_bus, scope=self.scope
         )
         candidates = [
             f
@@ -147,6 +156,20 @@ class Engagement:
         from .killchain.plan import KillChainPlanner
 
         return KillChainPlanner(self.store).plan(goal_host, goal_privilege)
+
+    def post_ex(self, backend: C2Backend) -> PostExOperator:
+        """Post-exploitation operator (O3) over this engagement's C2 sessions.
+
+        Authorized (engagement-boundary or gated), scope-bound to session hosts,
+        kill-switchable, audited — operates the footholds exploitation established.
+        """
+
+        from .c2.postex import PostExOperator
+
+        return PostExOperator(
+            self.session_manager, backend, self.scope, self.audit,
+            gate=self.context.gate, kill_switch=self.kill_switch,
+        )
 
     def orchestrator(self, *, blue_sentry: BlueSentry | None = None) -> Orchestrator:
         """Build an Orchestrator bound to this engagement (drives the full loop)."""
@@ -267,6 +290,8 @@ class Engine:
             network=network,
         )
         gate = HumanGate(self.audit, responder=gate_responder or self.gate_responder)
+        kill_switch = KillSwitch()
+        session_manager = SessionManager(scope, self.audit)
         ctx = AgentContext(
             scope=scope,
             tool_runner=runner,
@@ -275,6 +300,7 @@ class Engine:
             gateway=self.gateway,
             event_bus=self.event_bus,
             gate=gate,
+            kill_switch=kill_switch,
         )
         # Record engagement start in the immutable log.
         self.audit.append(
@@ -297,4 +323,6 @@ class Engine:
             audit=self.audit,
             feed=self.feed,
             scorer=self.scorer,
+            session_manager=session_manager,
+            kill_switch=kill_switch,
         )

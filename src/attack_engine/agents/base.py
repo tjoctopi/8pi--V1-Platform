@@ -21,6 +21,7 @@ from ..errors import (
     StopConditionReached,
     ToolExecutionError,
 )
+from ..governance.authorization import AuthorizationDecision, AuthorizationPolicy
 from ..logging import get_logger
 from ..schemas.agentspec import AgentSpec
 from ..schemas.events import Event, EventType
@@ -132,6 +133,13 @@ class Agent(ABC):
 
     # --- safe tool execution --------------------------------------------------
 
+    def _check_kill_switch(self) -> None:
+        """Halt immediately if the operator tripped the engagement kill switch."""
+
+        ks = self.ctx.kill_switch
+        if ks is not None and ks.tripped:
+            raise StopConditionReached("kill_switch", ks.reason)
+
     def run_tool(
         self, tool: str, target: str, profile: ToolProfile | None = None
     ) -> ToolResult | None:
@@ -146,6 +154,7 @@ class Agent(ABC):
             raise ValueError(
                 f"agent {self.spec.id!r} may not use tool {tool!r} (not in spec)"
             )
+        self._check_kill_switch()
         self._check_stop_conditions()
         try:
             result = self.ctx.tool_runner.run(tool, target, profile)
@@ -154,38 +163,82 @@ class Agent(ABC):
                 raise StopConditionReached("on_out_of_scope", target) from None
             _log.warning("skipping out-of-scope target", agent=self.spec.id, target=target)
             self._skipped.append(target)
+            self._record_tool_run(tool, target, "skipped", "out-of-scope")
             return None
         except (ToolExecutionError, SandboxError) as exc:
             # A single tool that times out, errors, or whose sandbox can't run
             # must degrade — never abort the engagement. The blackboard keeps
             # what other tools found; the Orchestrator can retry idempotently.
+            # Recorded as a coverage gap so a "0 leads" dossier is honest about
+            # which scanners never actually completed.
             _log.warning("tool degraded (execution error)", agent=self.spec.id,
                          tool=tool, target=target, error=str(exc))
             self._tool_calls += 1
+            self._record_tool_run(tool, target, "degraded", str(exc))
             return None
         self._tool_calls += 1
+        self._record_tool_run(tool, target, "ok" if result.ok else "empty")
         return result
+
+    def _record_tool_run(self, tool: str, target: str, outcome: str, detail: str = "") -> None:
+        """Best-effort coverage tally — never let bookkeeping break a run."""
+
+        recorder = getattr(self.ctx.store, "record_tool_run", None)
+        if recorder is not None:
+            recorder(tool, target, outcome, detail)
 
     # --- human gates ----------------------------------------------------------
 
     def require_gate(
-        self, action: str, *, target: str | None = None, summary: str = ""
+        self,
+        action: str,
+        *,
+        target: str | None = None,
+        summary: str = "",
+        technique: str | None = None,
     ) -> None:
-        """Block until a human approves ``action``; raise if denied.
+        """Authorize a controlled ``action``: run it autonomously or gate it.
 
-        The authoritative source of *which* actions are gated is the
-        human-signed **RoE** (``scope.roe.gated_actions``), not the agent spec.
-        An agent spec may *add* gates via ``require_gate_before`` but can never
-        remove a RoE-mandated one — a mis-authored or malicious spec cannot
-        downgrade governance (rule #2: scope/RoE decides at the boundary, not the
-        agent). Fails **closed**: a gated action with no gate wired stops the
-        agent. Raises :class:`~attack_engine.errors.GateDeniedError` on denial.
+        *Which* actions are controlled is set by the human-signed **RoE**
+        (``scope.roe.gated_actions``) + the agent spec (``require_gate_before``,
+        which may *add* but never remove a gate — rule #2). For a controlled
+        action, :class:`~attack_engine.governance.authorization.AuthorizationPolicy`
+        decides from the engagement-boundary authorization:
+
+        * **AUTONOMOUS** — the signed RoE pre-authorized this action/technique at
+          tier ≥ 1 and it is not high-impact → proceed, recording an
+          ``action.authorized`` audit entry (no human in the loop).
+        * **GATE** — Tier 0, high-impact, off the allowlist, or no valid signed
+          authorization → block for a human. Fails **closed**: a gated action
+          with no gate wired stops the agent.
+
+        Raises :class:`~attack_engine.errors.GateDeniedError` on denial and
+        :class:`StopConditionReached` on kill-switch / missing gate.
         """
 
+        self._check_kill_switch()
         roe_gated = action in self.ctx.scope.roe.gated_actions
         spec_gated = action in self.spec.guardrails.require_gate_before
         if not (roe_gated or spec_gated):
+            return  # not a controlled action
+
+        decision = AuthorizationPolicy(self.ctx.scope).decide(action, technique)
+        if decision is AuthorizationDecision.AUTONOMOUS:
+            self.ctx.audit.append(
+                engagement_id=self.ctx.engagement_id,
+                actor=self.spec.id,
+                action="action.authorized",
+                target=target,
+                payload={
+                    "action": action,
+                    "technique": technique,
+                    "autonomy_tier": self.ctx.scope.roe.autonomy_tier,
+                    "basis": "engagement-boundary authorization",
+                    "summary": summary,
+                },
+            )
             return
+
         if self.ctx.gate is None:
             raise StopConditionReached("gate_unavailable", action)
         self.ctx.gate.require(

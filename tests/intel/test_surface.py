@@ -91,8 +91,69 @@ def test_endpoints_and_observations_captured() -> None:
     asset = surface.assets[0]
     login = next(e for e in asset.endpoints if e.path == "/login.jsp")
     assert login.method == "POST" and "user" in login.params
-    assert "Prometheus Metrics" in asset.observations["medium"]
-    assert "Missing Security Headers" in asset.observations["info"]
+    by_name = {o.name: o for o in asset.observations}
+    assert by_name["Prometheus Metrics"].severity == "medium"
+    assert by_name["Missing Security Headers"].severity == "info"
+    # Medium/info observations need no corroboration — reported as-is.
+    assert by_name["Prometheus Metrics"].confidence == "reported"
+
+
+def test_uncorroborated_critical_is_flagged_unconfirmed() -> None:
+    # Reproduces the ggi false positive: a critical "VMware ESXi SLP" match on an
+    # nginx-only asset. Nothing in the fingerprint mentions vmware/esxi/slp, so it
+    # must be tagged unconfirmed — never surfaced as a confirmed critical.
+    store = KnowledgeStore("eng-fp")
+    store.add_asset(Asset(
+        address="www.example.com", engagement_id="eng-fp",
+        services=(Service(port=443, name="https", product="nginx"),),
+    ))
+    store.propose_finding(Finding(
+        engagement_id="eng-fp", asset="www.example.com",
+        type="web:vmware-esxi-slp-heap-overflow", title="VMware ESXi SLP - Heap Overflow DoS",
+        metadata={"severity": "critical"}))
+    surface = build_attack_surface(store)
+    obs = {o.name: o for o in surface.assets[0].observations}
+    esxi = obs["VMware ESXi SLP - Heap Overflow DoS"]
+    assert esxi.confidence == "unconfirmed"
+    md = surface.to_markdown()
+    assert "unconfirmed" in md
+    # The bogus critical must NOT be presented as corroborated.
+    assert "(corroborated): VMware ESXi" not in md
+
+
+def test_corroborated_critical_keeps_severity() -> None:
+    # A WordPress-tech asset with a matching WordPress critical IS corroborated.
+    store = KnowledgeStore("eng-tp")
+    store.add_asset(Asset(
+        address="blog.example.com", engagement_id="eng-tp",
+        services=(Service(port=443, name="https", product="Apache", banner="WordPress"),),
+    ))
+    store.propose_finding(Finding(
+        engagement_id="eng-tp", asset="blog.example.com",
+        type="web:wordpress-rce", title="WordPress core RCE",
+        metadata={"severity": "critical"}))
+    surface = build_attack_surface(store)
+    obs = surface.assets[0].observations[0]
+    assert obs.confidence == "corroborated"
+
+
+def test_edge_and_coverage_surfaced() -> None:
+    store = KnowledgeStore("eng-edge")
+    store.add_asset(Asset(address="www.example.com", engagement_id="eng-edge"))
+    store.propose_finding(Finding(
+        engagement_id="eng-edge", asset="www.example.com",
+        type="web-edge:cloudflare", title="Fronted by Cloudflare CDN/WAF",
+        metadata={"is_cdn": True, "is_waf": True, "vendor": "Cloudflare"}))
+    store.record_tool_run("nuclei", "www.example.com", "ok")
+    store.record_tool_run("dalfox", "www.example.com", "degraded", "timeout after 600s")
+    store.record_tool_run("dalfox", "www.example.com", "skipped", "lead-gated")
+    surface = build_attack_surface(store)
+    assert surface.assets[0].edge == "Cloudflare CDN/WAF"
+    cov = {h.tool: h for h in surface.coverage}
+    assert cov["dalfox"].degraded == 1 and cov["dalfox"].skipped == 1
+    md = surface.to_markdown()
+    assert "Coverage / tool health" in md
+    assert "Cloudflare" in md and "degraded" in md.lower()
 
 
 def test_markdown_is_offensive_oriented() -> None:

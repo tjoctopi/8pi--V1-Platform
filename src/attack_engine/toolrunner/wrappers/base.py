@@ -32,6 +32,11 @@ class ToolWrapper(ABC):
     #: refuses it unless the engagement RoE explicitly enables it — representing
     #: completed procurement / legal / headless-terms sign-off (spec §7, §9).
     licensed: bool = False
+    #: Whether the sandbox drops ALL Linux capabilities for this tool (the
+    #: hardened default). A tool whose runtime cannot start under ``--cap-drop
+    #: ALL`` (e.g. Metasploit's Alpine/musl Ruby) sets this False to use Docker's
+    #: default reduced cap set — every other sandbox control stays in force.
+    drop_all_caps: bool = True
 
     @abstractmethod
     def build_argv(self, target: str, profile: ToolProfile) -> list[str]:
