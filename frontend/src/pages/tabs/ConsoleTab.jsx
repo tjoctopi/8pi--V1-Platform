@@ -60,6 +60,7 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
   const [invs, setInvs] = useState([]);
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState("");
+  const [live, setLive] = useState([]);
 
   const load = useCallback(async () => {
     const [ag, r, ap, iv] = await Promise.all([api.agents(), api.agentRuns(eid), api.approvals(eid), api.invocations(eid)]);
@@ -79,6 +80,35 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
     setBusy(key);
     try { await fn(); toast.success(msg); await load(); await reload(); }
     catch (e) { toast.error(errMsg(e)); } finally { setBusy(""); }
+  };
+
+  // sense/vuln-scan run as background jobs (Docker-spawning, minutes-long).
+  // Start the job, stream live progress over SSE, poll until it finishes, reload.
+  const pollJob = async (kind) => {
+    for (let i = 0; i < 400; i++) {
+      const jobs = await api.jobs(eid);
+      const j = jobs.find((x) => x.kind === kind);
+      if (j && j.status !== "running") {
+        if (j.status === "error") throw new Error(j.detail || "job failed");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    throw new Error("job timed out");
+  };
+  const actJob = async (key, kind, startFn, msg) => {
+    setBusy(key); setLive([]);
+    let es;
+    try { es = new EventSource(api.engagementEventsUrl(eid)); } catch { es = null; }
+    if (es) es.onmessage = (e) => {
+      try { const m = JSON.parse(e.data); setLive((L) => [...L.slice(-49), m]); } catch { /* keep-alive */ }
+    };
+    try {
+      await startFn();
+      await pollJob(kind);
+      toast.success(msg); await load(); await reload();
+    } catch (e) { toast.error(errMsg(e)); }
+    finally { if (es) es.close(); setBusy(""); }
   };
 
   const pending = approvals.filter((a) => a.status === "pending");
@@ -101,18 +131,38 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
       <Panel className="p-5">
         <SectionTitle sub="Drive the engagement. Every action is scope-checked and audited.">Live Console</SectionTitle>
         <div className="flex flex-wrap items-center gap-3">
-          <Btn icon={MagnifyingGlass} variant="dark" loading={busy === "sense"} disabled={engagement.halted || !canWrite}
-            onClick={() => act("sense", () => api.sense(eid), "Sensing complete — asset graph updated")} data-testid="run-sensing-btn">Run Sensing</Btn>
-          <Btn icon={ShieldWarning} variant="dark" loading={busy === "vuln"} disabled={engagement.halted || !canWrite}
-            onClick={() => act("vuln", () => api.vulnScan(eid), "Vuln scan complete")} data-testid="run-vulnscan-btn">Vuln Scan</Btn>
+          <Btn icon={MagnifyingGlass} variant="dark" loading={busy === "sense"} disabled={engagement.halted || !canWrite || !!busy}
+            onClick={() => actJob("sense", "sense", () => api.sense(eid), "Sensing complete — asset graph updated")} data-testid="run-sensing-btn">Run Sensing</Btn>
+          <Btn icon={ShieldWarning} variant="dark" loading={busy === "vuln"} disabled={engagement.halted || !canWrite || !!busy}
+            onClick={() => actJob("vuln", "vuln-scan", () => api.vulnScan(eid), "Vuln scan complete")} data-testid="run-vulnscan-btn">Vuln Scan</Btn>
           <div className="h-6 w-px bg-white/10" />
           <Select value={pick} onChange={(e) => setPick(e.target.value)} className="w-52" data-testid="agent-picker">
             {authorized.length === 0 && <option value="">No authorized agents</option>}
             {authorized.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.role}</option>)}
           </Select>
-          <Btn icon={Robot} loading={busy === "run"} disabled={!pick || engagement.halted || !canWrite}
+          <Btn icon={Robot} loading={busy === "run"} disabled={!pick || engagement.halted || !canWrite || !!busy}
             onClick={() => act("run", () => api.runAgent(eid, pick), "Agent run complete")} data-testid="run-agent-btn">Run Agent</Btn>
         </div>
+
+        {(busy === "sense" || busy === "vuln" || live.length > 0) && (
+          <div className="mt-4 border border-line bg-ink" data-testid="live-feed">
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-line">
+              <span className="w-2 h-2 rounded-full bg-info blink" />
+              <span className="label text-info">Live progress</span>
+              <span className="ml-auto mono text-[10px] text-muted">{busy ? "running…" : "done"}</span>
+            </div>
+            <div className="max-h-52 overflow-y-auto p-3 space-y-1 font-mono text-[11px]">
+              {live.length === 0 ? (
+                <div className="text-muted">waiting for the engine to emit events…</div>
+              ) : live.map((m, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="text-volt shrink-0">{m.type}</span>
+                  <span className="text-sub truncate">{m.target || (m.payload && (m.payload.tool || m.payload.kind || m.payload.detail)) || ""}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Panel>
 
       {/* approvals */}

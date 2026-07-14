@@ -29,6 +29,7 @@ from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..errors import AttackEngineError
@@ -397,11 +398,10 @@ def create_app() -> FastAPI:
         _require_open(eid)
         targets = doc["roe"].get("scope_allowlist") or doc.get("estate", {}).get("seeds", [])
         try:
-            report = adapter().sense(eid, targets)
+            job = adapter().start_job(eid, "sense", targets)
         except AttackEngineError as exc:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-        return {"assets_touched": report.assets_found, "rejected": [
-            {"seed": t, "reason": "out of scope"} for t in report.skipped_targets]}
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "sense"}
 
     @api.get("/engagements/{eid}/assets")
     async def assets(eid: str) -> dict[str, Any]:
@@ -414,8 +414,24 @@ def create_app() -> FastAPI:
         eid: str, _: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         _require_open(eid)
-        verify, match = adapter().vuln_scan(eid)
-        return {"created": match.cves_confirmed, "updated": verify.verified}
+        try:
+            job = adapter().start_job(eid, "vuln-scan")
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "vuln-scan"}
+
+    @api.get("/engagements/{eid}/jobs")
+    async def jobs(eid: str) -> dict[str, Any]:
+        _load(eid)
+        return {"jobs": adapter().jobs(eid) if adapter().is_open(eid) else []}
+
+    @api.get("/engagements/{eid}/events")
+    async def events(eid: str) -> StreamingResponse:
+        _load(eid)
+        return StreamingResponse(
+            adapter().event_stream(eid), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @api.get("/engagements/{eid}/findings")
     async def findings(eid: str) -> dict[str, Any]:
