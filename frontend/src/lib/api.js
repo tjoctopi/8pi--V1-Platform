@@ -53,8 +53,10 @@ export const api = {
   archiveEngagement: (id) => http.post(`/engagements/${id}/archive`).then((r) => r.data),
   unarchiveEngagement: (id) => http.post(`/engagements/${id}/unarchive`).then((r) => r.data),
 
-  // sensing / assets / map
+  // sensing / assets / map  (sense + vulnScan now start a background job)
   sense: (id) => http.post(`/engagements/${id}/sense`).then((r) => r.data),
+  jobs: (id) => http.get(`/engagements/${id}/jobs`).then((r) => r.data.jobs),
+  engagementEventsUrl: (id) => withToken(`${API}/engagements/${id}/events`),
   assets: (id) => http.get(`/engagements/${id}/assets`).then((r) => r.data.assets),
   threatMap: (id) => http.get(`/engagements/${id}/threat-map`).then((r) => r.data),
 

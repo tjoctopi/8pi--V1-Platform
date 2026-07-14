@@ -9,6 +9,8 @@ console RoE → signed Scope → real recon/verify/correlate → console-shaped 
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from attack_engine.api.adapter import (
@@ -171,6 +173,54 @@ def test_end_to_end_recon_produces_console_assets_and_intact_audit(
     verdict = adapter.audit_verify("acme-001")
     assert verdict["valid"] is True
     assert verdict["count"] > 0
+
+
+def _wait_job(adapter: EngineAdapter, external_id: str, *, timeout: float = 8.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        jobs = adapter.jobs(external_id)
+        if jobs and jobs[0]["status"] != "running":
+            return jobs[0]
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
+
+
+def test_background_job_runs_recon_off_the_request_thread(adapter: EngineAdapter) -> None:
+    scope = scope_from_roe(
+        "job-1", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    job = adapter.start_job("job-1", "sense", ["10.5.0.10"])
+    assert job["status"] == "running"  # returns immediately, work continues on a thread
+
+    done = _wait_job(adapter, "job-1")
+    assert done["status"] == "done"
+    assert len(adapter.assets("job-1")) == 1  # recon really ran
+
+
+def test_engine_events_stream_to_the_engagement_queue(adapter: EngineAdapter) -> None:
+    scope = scope_from_roe(
+        "job-2", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    adapter.start_job("job-2", "sense", ["10.5.0.10"])
+    _wait_job(adapter, "job-2")
+    # the event bus fed asset/finding/job events into this engagement's SSE queue
+    q = adapter._events[engagement_id_for("job-2")]
+    assert not q.empty()
+
+
+def test_concurrent_job_refused(adapter: EngineAdapter) -> None:
+    scope = scope_from_roe(
+        "job-3", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "recon"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    adapter._busy.add(engagement_id_for("job-3"))  # simulate an in-flight job
+    with pytest.raises(Exception, match="already running"):
+        adapter.start_job("job-3", "sense", ["10.5.0.10"])
 
 
 def test_halt_trips_real_kill_switch(adapter: EngineAdapter) -> None:

@@ -21,9 +21,15 @@ that calls this adapter.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
+import json
+import queue
 import re
+import threading
+import time
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +42,7 @@ from ..errors import AttackEngineError, AuditIntegrityError
 from ..governance.rbac import AccessControl, Principal, Role
 from ..manager import EngagementManager
 from ..schemas.common import utcnow
+from ..schemas.events import Event
 from ..schemas.scope import RateLimit, RulesOfEngagement, Scope
 from ..verify.verifier import VerifyReport
 from . import views
@@ -201,6 +208,17 @@ class EngineAdapter:
         self._scopes: dict[str, Scope] = {}
         #: agent-run summaries per engine engagement id (for the Console tab).
         self._runs: dict[str, list[dict[str, Any]]] = {}
+        #: background job history + a per-engagement "busy" lock, so long,
+        #: Docker-spawning operations (recon/vuln-scan) run off the request
+        #: thread and the HTTP call returns immediately.
+        self._jobs: dict[str, list[dict[str, Any]]] = {}
+        self._busy: set[str] = set()
+        self._job_lock = threading.Lock()
+        #: per-engagement event queues fed from the engine event bus → SSE.
+        self._events: dict[str, queue.Queue[dict[str, Any]]] = {}
+        bus = self._engine.event_bus
+        if hasattr(bus, "subscribe"):
+            bus.subscribe(self._route_event)
 
     # ── accessors ─────────────────────────────────────────────────────────
     @property
@@ -313,6 +331,100 @@ class EngineAdapter:
         with contextlib.suppress(AttackEngineError):
             match = eng.correlate()
         return verify, match
+
+    # ── background jobs + live events ───────────────────────────────────────
+    def _route_event(self, event: Event) -> None:
+        """Fan an engine event into its engagement's SSE queue (thread-safe)."""
+
+        q = self._events.get(event.engagement_id)
+        if q is None:
+            return
+        msg = {
+            "ts": utcnow().isoformat(), "type": event.event.value,
+            "emitted_by": event.emitted_by, "target": event.target,
+            "payload": event.payload,
+        }
+        with contextlib.suppress(queue.Full):
+            q.put_nowait(msg)
+
+    def _emit(self, eid: str, kind: str, payload: dict[str, Any]) -> None:
+        q = self._events.get(eid)
+        if q is not None:
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"ts": utcnow().isoformat(), "type": kind,
+                              "emitted_by": "api", "payload": payload})
+
+    def start_job(
+        self, external_id: str, kind: str, targets: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Start recon ('sense') or 'vuln-scan' on a worker thread.
+
+        Returns immediately with a job record so the HTTP request never blocks on
+        a minutes-long, Docker-spawning scan. Progress streams over the event
+        queue; poll :meth:`jobs` (or subscribe to the SSE stream) for completion.
+        Refuses a second concurrent job for the same engagement.
+        """
+
+        eid = engagement_id_for(external_id)
+        self._events.setdefault(eid, queue.Queue(maxsize=2000))
+        with self._job_lock:
+            if eid in self._busy:
+                raise AttackEngineError("an operation is already running for this engagement")
+            self._busy.add(eid)
+            job = {
+                "id": f"job-{len(self._jobs.get(eid, [])) + 1}", "kind": kind,
+                "status": "running", "started_at": time.time(),
+                "ended_at": None, "detail": "",
+            }
+            self._jobs.setdefault(eid, []).append(job)
+        self._emit(eid, "job.started", {"job": job["id"], "kind": kind})
+        threading.Thread(
+            target=self._run_job, args=(external_id, job, kind, targets or []),
+            daemon=True,
+        ).start()
+        return job
+
+    def _run_job(
+        self, external_id: str, job: dict[str, Any], kind: str, targets: list[str]
+    ) -> None:
+        eid = engagement_id_for(external_id)
+        try:
+            if kind == "sense":
+                self.sense(external_id, targets)
+            elif kind == "vuln-scan":
+                self.vuln_scan(external_id)
+            else:
+                raise AttackEngineError(f"unknown job kind {kind!r}")
+            job["status"] = "done"
+        except Exception as exc:
+            job["status"] = "error"
+            job["detail"] = f"{type(exc).__name__}: {exc}"
+            self._emit(eid, "job.error", {"job": job["id"], "detail": job["detail"]})
+        finally:
+            job["ended_at"] = time.time()
+            with self._job_lock:
+                self._busy.discard(eid)
+            self._emit(eid, "job.finished", {"job": job["id"], "status": job["status"]})
+
+    def jobs(self, external_id: str) -> list[dict[str, Any]]:
+        return list(reversed(self._jobs.get(engagement_id_for(external_id), [])))
+
+    async def event_stream(self, external_id: str) -> AsyncIterator[str]:
+        """SSE generator — drains the engagement's event queue as it fills."""
+
+        eid = engagement_id_for(external_id)
+        q = self._events.setdefault(eid, queue.Queue(maxsize=2000))
+        yield "retry: 3000\n\n"
+        while True:
+            drained = False
+            with contextlib.suppress(queue.Empty):
+                while True:
+                    msg = q.get_nowait()
+                    drained = True
+                    yield f"data: {json.dumps(msg)}\n\n"
+            if not drained:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(1.0)
 
     # ── reads (console-shaped JSON) ─────────────────────────────────────────
     def assets(self, external_id: str) -> list[dict[str, Any]]:
