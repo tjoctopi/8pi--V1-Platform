@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Robot, Plus, ArrowFatUp, ShieldCheck, Cube } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { PROMOTION, INTENSITY, timeAgo } from "../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, Field, TextInput, Select, useToast, errMsg } from "../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, Field, TextInput, Select, PreviewNotice, useToast, errMsg } from "../components/ui";
 
 const ROLE_COLOR = { offensive: "#FF00A0", defensive: "#FFFFFF", recon: "#B4B4B4" };
 const ALL_TOOLS = ["nmap", "nikto", "dirbust", "wpscan", "sqlmap"];
@@ -94,6 +94,12 @@ export default function AgentsPage() {
         right={<Btn icon={Plus} onClick={() => setOpen(true)} data-testid="new-agent-btn">New Agent</Btn>}>
         Agent Registry
       </SectionTitle>
+
+      <PreviewNotice className="mb-6">
+        These are the engine's real built-in agent archetypes (Surface Mapper, Web Inquisitor,
+        Exploit Confirmer, Converter). Authoring new agents and the sandbox → promotion flow
+        aren't wired to the engine yet — those actions are not available in this build.
+      </PreviewNotice>
 
       <div className="grid lg:grid-cols-4 gap-6">
         <div className="lg:col-span-3">

@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, StackSimple, Compass, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary, PreviewNotice } from "../../components/ui";
 
 const ROLE = {
   entry: { color: "#FFFFFF", label: "Entry Point", icon: Target },
@@ -556,7 +556,11 @@ export default function AttackPathTab({ eid }) {
             </Btn>
           </div>
           {!shown && !streaming ? (
-            <Empty icon={Compass} title="No AI analysis yet" hint="Generate a real-time attack-path narrative that chains every finding into the most likely route across the ecosystem." />
+            <PreviewNotice title="AI narrative not available yet">
+              The globe, footholds and attack routes above are real (built from the engine's
+              findings). The streaming AI narrative that walks the route in plain language isn't
+              wired to the engine yet — this data is not available in this build.
+            </PreviewNotice>
           ) : (
             <div className="bg-black border border-line p-4 text-[13px] text-sub leading-relaxed max-h-[560px] overflow-y-auto" data-testid="attack-path-stream">
               {renderMd(shown)}

@@ -50,6 +50,23 @@ export function Empty({ icon: Icon, title, hint, action }) {
   );
 }
 
+// Honest "this isn't wired to the engine yet" banner. Kept visible on purpose so
+// a not-yet-available view reads as intentional, not broken.
+export function PreviewNotice({ title = "Not available yet", children, className = "" }) {
+  return (
+    <div
+      className={cx("flex items-start gap-3 border border-warn/40 bg-warn/5 px-4 py-3", className)}
+      data-testid="preview-notice"
+    >
+      <WarningCircle size={18} weight="bold" className="text-warn shrink-0 mt-0.5" />
+      <div>
+        <div className="label text-warn">{title}</div>
+        {children && <div className="text-sm text-sub mt-1 leading-relaxed">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
 const VARIANTS = {
   primary: "bg-volt hover:bg-voltbright text-black border-transparent font-black",
   ghost:   "bg-transparent hover:bg-white/10 text-sub hover:text-white border-line hover:border-volt",
