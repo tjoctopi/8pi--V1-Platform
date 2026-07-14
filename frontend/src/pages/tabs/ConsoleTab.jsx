@@ -5,7 +5,7 @@ import {
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Dot, Loading, Empty, Select, useToast, errMsg } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Dot, Loading, Empty, Select, PreviewNotice, useToast, errMsg } from "../../components/ui";
 import { useAuth, roleAtLeast } from "../../lib/auth";
 
 function StepRow({ s }) {
@@ -121,6 +121,11 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
           right={<Badge color={pending.length ? "#B4B4B4" : "#FFFFFF"} dot>{pending.length} PENDING</Badge>}>
           Approval Gate
         </SectionTitle>
+        <PreviewNotice className="mb-3">
+          Sense and Vuln Scan above are live against the real engine. Human approval gates and
+          one-click agent-run dispatch aren't wired yet — those are not available in this build
+          (the engine enforces gates today via signed scope + kill switch).
+        </PreviewNotice>
         {pending.length === 0 ? (
           <Panel className="p-6"><div className="text-sm text-muted">No actions awaiting approval.</div></Panel>
         ) : (

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Cpu, CloudArrowUp, HardDrive, Prohibit, PaperPlaneTilt, LockKey } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Field, Select, Textarea, useToast, errMsg } from "../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Field, Select, Textarea, PreviewNotice, useToast, errMsg } from "../components/ui";
 
 const KIND_ICON = { hosted: CloudArrowUp, local: HardDrive, stub: Prohibit };
 const KIND_COLOR = { hosted: "#B4B4B4", local: "#FFFFFF", stub: "#7A7A7A" };
@@ -78,6 +78,10 @@ export default function ModelGatewayPage() {
       <div className="grid lg:grid-cols-2 gap-6">
         <Panel className="p-6">
           <SectionTitle sub="Sensitive/airgapped traffic is pinned to local — never a hosted provider (SEC-05).">Test Inference</SectionTitle>
+          <PreviewNotice className="mb-4">
+            The interactive inference playground isn't wired to the engine yet — this data is not
+            available in this build. The routes above are live from the real gateway.
+          </PreviewNotice>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Task Class">
               <Select value={form.task_class} onChange={(e) => setForm({ ...form, task_class: e.target.value })} data-testid="mg-taskclass">

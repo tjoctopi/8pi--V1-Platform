@@ -7,7 +7,7 @@ import {
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/theme";
 import {
-  Panel, Btn, Badge, Loading, Empty, TextInput, Select, useToast, errMsg, IncidentText, Spinner,
+  Panel, Btn, Badge, Loading, Empty, TextInput, Select, PreviewNotice, useToast, errMsg, IncidentText, Spinner,
 } from "../components/ui";
 
 const ALL_TOOLS = ["nmap", "nikto", "dirbust", "wpscan", "sqlmap"];
@@ -261,6 +261,11 @@ export default function RedScope() {
               <span className="h-font text-sm uppercase tracking-widest2 text-white">Adversary Copilot</span>
               <span className="ml-auto text-[10px] mono text-muted">describe intent → review → save agent</span>
             </div>
+
+            <PreviewNotice className="m-3">
+              The Adversary Copilot chat isn't wired to the engine yet — this data is not available
+              in this build. The incident hub on the left is live from real engagement state.
+            </PreviewNotice>
 
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="red-scope-messages">
               {messages.length === 0 && (

@@ -24,6 +24,7 @@ redis = ["redis>=5.0,<6"]
 postgres = ["psycopg[binary]>=3.2,<4"]
 neo4j = ["neo4j>=5.20,<6"]
 mlflow = ["mlflow>=2.14"]
+api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pyjwt>=2.8"]
 dev = [
     "pytest>=8.2",
     "pytest-cov>=5.0",
@@ -33,7 +34,7 @@ dev = [
     "types-PyYAML>=6.0",
     "fakeredis>=2.23",
 ]
-all = ["attack-engine[redis,postgres,neo4j,mlflow,dev]"]
+all = ["attack-engine[redis,postgres,neo4j,mlflow,api,dev]"]
 
 [project.scripts]
 attack-engine = "attack_engine.cli:app"

@@ -33,3 +33,7 @@ audit.db
 .idea/
 .vscode/
 *.swp
+
+# Frontend build artifacts
+node_modules/
+frontend/build/
