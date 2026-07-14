@@ -37,3 +37,7 @@ audit.db
 # Frontend build artifacts
 node_modules/
 frontend/build/
+
+# Root collateral (1-pagers / overviews) — keep out of git
+/8pi-*.docx
+/8pi-*.pdf
