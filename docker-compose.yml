@@ -1,57 +1,61 @@
-# 8pi v1 — one-command local / production stack
+# 8π v1 — one-command stack, backed by the REAL attack_engine.
+#
 # Usage:
-#   1. Copy .env.example to .env and fill in the values (JWT_SECRET, AWS_REGION, BEDROCK_MODEL_ID, ADMIN creds).
+#   1. cp .env.example .env  and fill in AE_API_JWT_SECRET, AE_API_ADMIN_*, model keys.
 #   2. docker compose up -d --build
-#   3. Open http://localhost (or your VPS IP). Sign in with the admin credentials from .env.
+#   3. Open http://localhost (or your host IP). Sign in with the admin creds from .env.
 #
 # Services:
-#   - mongo    : MongoDB 7 (data persisted in the `mongo_data` volume)
-#   - backend  : FastAPI + real CLI security tools (nmap, nikto, wpscan, sqlmap, gobuster)
-#   - frontend : React SPA served by nginx; reverse-proxies /api → backend
+#   - api      : FastAPI over the real engine (attack_engine.api). Spawns sandboxed
+#                tool containers on the host Docker via the mounted socket.
+#   - frontend : React SPA (nginx); reverse-proxies /api → api service.
 #
-# For AWS EC2 deployment see /deploy/README.md.
+# State: engine defaults are in-process (SQLite audit, in-memory event bus, NetworkX
+# graph) so this runs with no extra services. For production, flip the AE_* backend
+# vars (Postgres/Redis/Neo4j) in .env — no code change. See deploy/README.md.
+#
+# NOTE: the legacy Mongo prototype (backend/) is no longer built here — see
+# backend/DEPRECATED.md.
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    volumes:
-      - mongo_data:/data/db
-    networks: [eightpi]
-    # Bind to loopback only — the DB is never exposed to the internet.
-    ports: []
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  backend:
+  api:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: deploy/api.Dockerfile
     restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
     environment:
-      MONGO_URL: mongodb://mongo:27017
-      DB_NAME: ${DB_NAME:-eightpi_db}
-      JWT_SECRET: ${JWT_SECRET}
-      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
-      SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-8pi Admin}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-us.anthropic.claude-opus-4-8}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      TOOL_MODE: ${TOOL_MODE:-auto}
-      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-}
+      AE_ENV: ${AE_ENV:-prod}
+      AE_LOG_JSON: ${AE_LOG_JSON:-true}
+      # auth / shell
+      AE_API_JWT_SECRET: ${AE_API_JWT_SECRET}
+      AE_API_ADMIN_EMAIL: ${AE_API_ADMIN_EMAIL}
+      AE_API_ADMIN_PASSWORD: ${AE_API_ADMIN_PASSWORD}
+      AE_API_ORIGINS: ${AE_API_ORIGINS:-}
+      # governance state (defaults: sqlite + in-proc; override for prod)
+      AE_AUDIT_BACKEND: ${AE_AUDIT_BACKEND:-sqlite}
+      AE_EVENTBUS_BACKEND: ${AE_EVENTBUS_BACKEND:-memory}
+      AE_GRAPH_BACKEND: ${AE_GRAPH_BACKEND:-networkx}
+      # optional managed backends (set these in .env for production)
+      AE_AUDIT_POSTGRES_DSN: ${AE_AUDIT_POSTGRES_DSN:-}
+      AE_EVENTBUS_REDIS_URL: ${AE_EVENTBUS_REDIS_URL:-}
+      AE_NEO4J_URL: ${AE_NEO4J_URL:-}
+      AE_NEO4J_USER: ${AE_NEO4J_USER:-}
+      AE_NEO4J_PASSWORD: ${AE_NEO4J_PASSWORD:-}
+      # offensive tool sandbox: the host network the tool containers join so they can
+      # reach the authorized targets (scope is still enforced deny-by-default).
+      AE_SANDBOX_BACKEND: ${AE_SANDBOX_BACKEND:-docker}
+      AE_SANDBOX_NETWORK: ${AE_SANDBOX_NETWORK:-}
+      # BYOM model gateway
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AE_MODEL_MOCK: ${AE_MODEL_MOCK:-false}
+    volumes:
+      # spawn locked-down tool sandboxes on the host Docker (docker-out-of-docker)
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ae_data:/app/data
     networks: [eightpi]
-    # Backend is internal-only; frontend nginx proxies /api to it.
+    # internal only — frontend nginx proxies /api to it
     expose:
-      - "8001"
+      - "8000"
 
   frontend:
     build:
@@ -62,7 +66,7 @@ services:
         REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-}
     restart: unless-stopped
     depends_on:
-      - backend
+      - api
     ports:
       - "${HTTP_PORT:-80}:80"
     networks: [eightpi]
@@ -72,5 +76,5 @@ networks:
     driver: bridge
 
 volumes:
-  mongo_data:
+  ae_data:
     driver: local
