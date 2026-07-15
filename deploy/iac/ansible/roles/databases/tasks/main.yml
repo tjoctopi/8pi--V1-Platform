@@ -1,0 +1,21 @@
+---
+- name: Render database compose
+  ansible.builtin.template:
+    src: docker-compose.db.yml.j2
+    dest: "{{ app_dir }}/docker-compose.db.yml"
+    mode: "0644"
+
+- name: Bring up databases (postgres, redis, neo4j)
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f docker-compose.db.yml up -d
+    chdir: "{{ app_dir }}"
+  register: dbup
+  changed_when: true
+
+- name: Wait for Postgres to be ready
+  ansible.builtin.command: docker exec 8pi-postgres pg_isready -U {{ ae_pg_user }} -d {{ ae_pg_db }}
+  register: pgready
+  changed_when: false
+  retries: 10
+  delay: 6
+  until: pgready.rc == 0

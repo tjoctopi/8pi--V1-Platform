@@ -1,0 +1,20 @@
+---
+- name: Install base packages
+  ansible.builtin.apt:
+    name: [git, awscli, jq, curl, ca-certificates, unzip, python3]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure app directory exists
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Clone/update the platform repo ({{ repo_branch }})
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_dir }}"
+    version: "{{ repo_branch }}"
+    force: true

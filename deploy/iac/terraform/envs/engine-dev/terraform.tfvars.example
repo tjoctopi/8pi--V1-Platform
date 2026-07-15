@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars and adjust. Region is hard-locked to us-east-1.
+aws_region     = "us-east-1"
+instance_type  = "t3.xlarge"
+root_volume_gb = 80
+
+# Optional overrides:
+# bedrock_model_id    = "us.anthropic.claude-opus-4-8"
+# seed_admin_email    = "admin@8pi.io"
+# seed_admin_password = ""   # empty => strong random, stored in Secrets Manager
+# repo_url            = "https://github.com/tjoctopi/8pi--V1-Platform.git"
+# branch              = "dev"
+
+tags = {
+  Owner   = "devops"
+  Purpose = "attack-engine-dev-test"
+}

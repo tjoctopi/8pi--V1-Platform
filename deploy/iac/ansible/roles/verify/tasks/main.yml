@@ -1,0 +1,31 @@
+---
+- name: List running containers
+  ansible.builtin.command: docker ps
+  register: ps
+  changed_when: false
+
+- name: Show running containers
+  ansible.builtin.debug:
+    var: ps.stdout_lines
+
+- name: Check the engine API responds through nginx
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ http_port }}/api/health"
+    status_code: [200]
+  register: http
+  retries: 20
+  delay: 8
+  until: http.status is defined and http.status == 200
+
+- name: Verify docker-out-of-docker (api container can reach the host Docker)
+  ansible.builtin.command: docker exec engine-api-1 docker ps
+  register: dood
+  changed_when: false
+  failed_when: dood.rc != 0
+
+- name: Deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "Engine API health: {{ http.status | default('n/a') }}"
+      - "Docker-out-of-docker: {{ 'ok' if dood.rc == 0 else 'FAIL' }}"
+      - "Reach the console via SSM port-forward to 127.0.0.1:{{ http_port }} (no public port)."

@@ -1,0 +1,7 @@
+# Copy to backend.hcl and fill in (reuse the existing 8pi state bucket + lock table).
+# The state KEY (engine-dev/terraform.tfstate) is fixed in backend.tf so the
+# engine env is fully isolated from the console env in the same bucket.
+bucket         = "REPLACE-with-existing-8pi-tfstate-bucket"
+dynamodb_table = "REPLACE-with-existing-8pi-tfstate-lock"
+region         = "us-east-1"
+encrypt        = true
