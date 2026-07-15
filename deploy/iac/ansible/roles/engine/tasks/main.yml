@@ -1,0 +1,13 @@
+---
+- name: Render engine override compose
+  ansible.builtin.template:
+    src: docker-compose.engine.yml.j2
+    dest: "{{ app_dir }}/docker-compose.engine.yml"
+    mode: "0644"
+
+- name: Build and bring up the console + attack-engine stack
+  ansible.builtin.command:
+    cmd: docker compose --env-file .env -f docker-compose.yml -f docker-compose.engine.yml up -d --build
+    chdir: "{{ app_dir }}"
+  register: engineup
+  changed_when: true

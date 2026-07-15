@@ -1,0 +1,43 @@
+# Managed by Ansible (engine role). Layered on the repo docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.engine.yml up -d
+#
+# Adds the attack-engine wiring to the console backend: Postgres audit, Redis
+# event bus, Neo4j graph (all on the external data_net), the docker.sock needed
+# to spawn sandboxed tool containers, and the range network those tools join.
+# Model gateway uses keyless Bedrock via the EC2 instance role (LiteLLM).
+services:
+  backend:
+    # Single worker: the startup dogfood seed + auth seed are not safe to run
+    # from multiple workers concurrently (duplicate-key races on first boot).
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      AE_ENV: dev
+      AE_LOG_LEVEL: INFO
+      AE_AUDIT_BACKEND: postgres
+      AE_AUDIT_POSTGRES_DSN: postgresql://{{ ae_pg_user }}:${POSTGRES_PASSWORD}@8pi-postgres:5432/{{ ae_pg_db }}
+      AE_EVENTBUS_BACKEND: redis
+      AE_EVENTBUS_REDIS_URL: redis://8pi-redis:6379/0
+      AE_GRAPH_BACKEND: neo4j
+      AE_NEO4J_URL: bolt://8pi-neo4j:7687
+      AE_NEO4J_USER: neo4j
+      AE_NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      AE_NEO4J_DATABASE: neo4j
+      AE_SANDBOX_BACKEND: docker
+      AE_SANDBOX_NETWORK: {{ range_network_name }}
+      AE_MODEL_FRONTIER: {{ ae_model_frontier }}
+      AE_MODEL_LOCAL: {{ ae_model_frontier }}
+      AE_MODEL_MOCK: "false"
+    networks:
+      - eightpi
+      - data_net
+      - range_net
+
+networks:
+  data_net:
+    external: true
+    name: {{ data_network_name }}
+  range_net:
+    external: true
+    name: {{ range_network_name }}

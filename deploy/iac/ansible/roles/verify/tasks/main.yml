@@ -1,0 +1,45 @@
+---
+- name: List running containers
+  ansible.builtin.command: docker ps
+  register: ps
+  changed_when: false
+
+- name: Show running containers
+  ansible.builtin.debug:
+    var: ps.stdout_lines
+
+- name: Check the console/engine HTTP endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ http_port }}/"
+    status_code: [200, 301, 302, 401]
+  register: http
+  retries: 15
+  delay: 8
+  until: http.status is defined and http.status in [200, 301, 302, 401]
+
+- name: Check Postgres is ready
+  ansible.builtin.command: docker exec 8pi-postgres pg_isready -U {{ ae_pg_user }} -d {{ ae_pg_db }}
+  register: pg
+  changed_when: false
+  failed_when: pg.rc != 0
+
+- name: Check Redis responds
+  ansible.builtin.command: docker exec 8pi-redis redis-cli ping
+  register: rd
+  changed_when: false
+  failed_when: "'PONG' not in rd.stdout"
+
+- name: Check Neo4j HTTP is up
+  ansible.builtin.command: docker exec 8pi-neo4j wget -qO- http://localhost:7474
+  register: neo
+  changed_when: false
+  failed_when: neo.rc != 0
+
+- name: Deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "Console/engine HTTP: {{ http.status | default('n/a') }}"
+      - "Postgres: {{ 'ready' if pg.rc == 0 else 'FAIL' }}"
+      - "Redis: {{ 'ok' if 'PONG' in rd.stdout else 'FAIL' }}"
+      - "Neo4j: {{ 'up' if neo.rc == 0 else 'FAIL' }}"
+      - "Access the console via SSM port-forward to 127.0.0.1:{{ http_port }} (no public port is open)."

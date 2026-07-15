@@ -1,0 +1,14 @@
+# Dynamic inventory: find the engine host by tag, in us-east-1 only.
+# Connection is SSM (set in group_vars/all.yml) so no SSH / public IP is used.
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+filters:
+  "tag:Project": "8pi"
+  "tag:Env": "engine-dev"
+  instance-state-name:
+    - running
+hostnames:
+  - instance-id
+compose:
+  ansible_host: instance_id

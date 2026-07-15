@@ -1,0 +1,62 @@
+# Managed by Ansible (databases role). Engine backends: audit / event bus / graph.
+# Passwords come from .env (rendered from Secrets Manager). Data net is external
+# (created by the docker role) so the engine stack can join it too.
+name: 8pi-data
+
+networks:
+  data_net:
+    external: true
+    name: {{ data_network_name }}
+
+volumes:
+  pg_data:
+  redis_data:
+  neo4j_data:
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: 8pi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ ae_pg_db }}
+      POSTGRES_USER: {{ ae_pg_user }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [data_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ ae_pg_user }} -d {{ ae_pg_db }}"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: 8pi-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [data_net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5
+    container_name: 8pi-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set in .env}
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+    networks: [data_net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10

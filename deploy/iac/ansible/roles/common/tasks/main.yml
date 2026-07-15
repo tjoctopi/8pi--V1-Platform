@@ -1,0 +1,54 @@
+---
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - git
+      - awscli
+      - jq
+      - curl
+      - ca-certificates
+      - unzip
+      - python3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure app directory exists
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Clone/update the platform repo ({{ repo_branch }})
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_dir }}"
+    version: "{{ repo_branch }}"
+    force: true
+
+- name: Render .env from Secrets Manager (keyless via instance role; secrets stay on host)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    R="{{ aws_region }}"; P="{{ secrets_prefix }}"
+    get() { aws secretsmanager get-secret-value --secret-id "$P/$1" --query SecretString --output text --region "$R"; }
+    JWT="$(get jwt-secret)"; ADMINPW="$(get seed-admin-password)"; PGPW="$(get postgres-password)"; NEOPW="$(get neo4j-password)"
+    cat > "{{ app_dir }}/.env" <<EOF
+    DB_NAME=eightpi_db
+    JWT_SECRET=$JWT
+    SEED_ADMIN_EMAIL={{ seed_admin_email }}
+    SEED_ADMIN_PASSWORD=$ADMINPW
+    SEED_ADMIN_NAME=8pi Admin
+    AWS_REGION={{ aws_region }}
+    BEDROCK_MODEL_ID={{ bedrock_model_id }}
+    COOKIE_SECURE=false
+    TOOL_MODE=auto
+    HTTP_PORT={{ http_port }}
+    POSTGRES_PASSWORD=$PGPW
+    NEO4J_PASSWORD=$NEOPW
+    EOF
+    chmod 600 "{{ app_dir }}/.env"
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: true

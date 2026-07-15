@@ -1,0 +1,45 @@
+---
+# ── Connection: SSM Session Manager (NO SSH) ───────────────────────────────
+# Requires the AWS CLI + session-manager-plugin on the controller and an S3
+# bucket in us-east-1 for file transfer. Pass the bucket with:
+#   ansible-playbook site.yml -e ssm_transfer_bucket=<bucket>
+ansible_connection: community.aws.aws_ssm
+ansible_aws_ssm_region: us-east-1
+ansible_aws_ssm_bucket_name: "{{ ssm_transfer_bucket | default('CHANGE-ME-ssm-transfer-bucket') }}"
+# session-manager-plugin path (Homebrew on macOS symlinks here). Override with
+# -e ansible_aws_ssm_plugin=<path> if yours differs.
+ansible_aws_ssm_plugin: "{{ ssm_plugin_path | default('/opt/homebrew/bin/session-manager-plugin') }}"
+ansible_shell_type: sh
+
+# ── AWS / project ──────────────────────────────────────────────────────────
+aws_region: us-east-1
+project_name: 8pi-engine-dev
+secrets_prefix: "/8pi-engine-dev"
+
+# ── App source ──
+app_dir: /opt/8pi/engine
+repo_url: "https://github.com/tjoctopi/8pi--V1-Platform.git"
+repo_branch: dev
+
+# ── Databases ────────────────────────────────────────────────────────────────
+ae_pg_db: attack_engine
+ae_pg_user: ae
+
+# ── Model gateway: keyless Bedrock via the instance role (LiteLLM) ───────────
+bedrock_model_id: "us.anthropic.claude-opus-4-8"
+ae_model_frontier: "bedrock/us.anthropic.claude-opus-4-8"
+
+# ── Docker networks ──────────────────────────────────────────────────────────
+data_network_name: "8pi_data_net"
+range_network_name: "attack-engine-range_range_net"
+
+# ── Range profiles ────────────────────────────────────────────────────────────
+# Core targets (juice-shop, dvwa, metasploitable) always come up.
+# "c2" = persistent Metasploit RPC listener. "ad" = Samba AD DC (O5/O6) — opt-in
+# because its ghcr.io image can be denied to anonymous pulls; add "ad" once the
+# image is pullable (docker login ghcr.io) or swapped for an accessible one.
+range_profiles: ["c2"]
+
+# ── Console ──────────────────────────────────────────────────────────────────
+seed_admin_email: "admin@8pi.io"
+http_port: 80
