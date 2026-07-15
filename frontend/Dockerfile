@@ -6,9 +6,9 @@ ENV CI=true \
     GENERATE_SOURCEMAP=false \
     DISABLE_ESLINT_PLUGIN=true
 
-# Install deps first (better caching)
-COPY frontend/package.json frontend/yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 600000
+# Install deps first (better caching) — npm is the standard (package-lock.json committed)
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 # Build
 COPY frontend/ ./
@@ -17,7 +17,7 @@ COPY frontend/ ./
 # so the frontend calls "/api/..." relative to the current host.
 ARG REACT_APP_BACKEND_URL=""
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
-RUN yarn build
+RUN npm run build
 
 # ────────────── runtime ──────────────
 FROM nginx:1.27-alpine
