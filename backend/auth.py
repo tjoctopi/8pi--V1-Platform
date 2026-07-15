@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, Body, 
 from pydantic import BaseModel, EmailStr, Field
 
 from db import db
+from pymongo.errors import DuplicateKeyError
 from store import now_iso
 
 ROLES = ("admin", "approver", "operator", "viewer")
@@ -308,9 +309,14 @@ async def seed_admin():
                                       {"$set": {"password_hash": hash_password(pw), "role": "admin"}})
         return existing["_id"]
     uid = uuid.uuid4().hex
-    await db.users.insert_one({
-        "_id": uid, "email": email, "password_hash": hash_password(pw),
-        "name": os.environ.get("SEED_ADMIN_NAME", "Admin"), "role": "admin",
-        "created_at": now_iso(), "last_login": None,
-    })
+    try:
+        await db.users.insert_one({
+            "_id": uid, "email": email, "password_hash": hash_password(pw),
+            "name": os.environ.get("SEED_ADMIN_NAME", "Admin"), "role": "admin",
+            "created_at": now_iso(), "last_login": None,
+        })
+    except DuplicateKeyError:
+        # Another worker seeded the admin first — race-safe: reuse the existing row.
+        existing = await db.users.find_one({"email": email})
+        return existing["_id"] if existing else None
     return uid

@@ -36,10 +36,13 @@ def _messages(user_text):
 
 
 def _kwargs(system_msg, user_text, max_tokens, temperature):
+    # NOTE: Claude Opus 4.8 on Bedrock rejects `temperature` in inferenceConfig
+    # (ValidationException). We omit it (temperature kept in the signature for
+    # backwards compatibility but not sent).
     kw = {
         "modelId": BEDROCK_MODEL_ID,
         "messages": _messages(user_text),
-        "inferenceConfig": {"maxTokens": int(max_tokens or 512), "temperature": temperature},
+        "inferenceConfig": {"maxTokens": int(max_tokens or 512)},
     }
     if system_msg:
         kw["system"] = [{"text": system_msg}]

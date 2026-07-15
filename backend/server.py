@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 
 from dotenv import load_dotenv
@@ -92,8 +93,15 @@ async def _startup():
             logger.info("8pi admin ensured (id=%s)", seeded)
     except Exception as e:
         logger.exception("auth setup failed: %s", e)
-    try:
-        await seed_if_empty()
-        logger.info("8pi seed complete")
-    except Exception as e:
-        logger.exception("seed failed: %s", e)
+
+    # Heavy dogfood seed (demo engagement, sensing, agent runs) must NOT block
+    # server startup, or uvicorn never reports "startup complete" and every
+    # request 502s. Run it in the background so the API serves immediately.
+    async def _bg_seed():
+        try:
+            await seed_if_empty()
+            logger.info("8pi seed complete")
+        except Exception as e:
+            logger.exception("seed failed: %s", e)
+
+    asyncio.create_task(_bg_seed())
