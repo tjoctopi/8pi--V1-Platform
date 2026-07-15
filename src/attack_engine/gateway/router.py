@@ -63,7 +63,12 @@ class ModelGateway:
             keys["fireworks_ai"] = settings.fireworks_api_key.get_secret_value()
         if settings.anthropic_api_key:
             keys["anthropic"] = settings.anthropic_api_key.get_secret_value()
-        if not keys:
+        # Bedrock needs no API key — LiteLLM authenticates via the AWS credential
+        # chain (env / EC2 instance role), so a `bedrock/…` tier is a keyless path.
+        uses_bedrock = (settings.model_frontier or "").startswith("bedrock/") or (
+            settings.model_local or ""
+        ).startswith("bedrock/")
+        if not keys and not uses_bedrock:
             _log.warning("no model provider keys set; falling back to MockProvider")
             return MockProvider()
         return LiteLLMProvider(keys=keys)

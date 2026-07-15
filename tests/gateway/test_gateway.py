@@ -125,3 +125,32 @@ def test_gateway_builds_multiprovider_from_both_keys() -> None:
     assert gw.provider_name == "litellm"
     assert isinstance(gw._provider, LiteLLMProvider)
     assert gw._provider._keys == {"fireworks_ai": "fw", "anthropic": "an"}
+
+
+class TestProviderSelection:
+    """`_build_provider` picks mock vs LiteLLM from config. `_env_file=None`
+    isolates these from any real `.env` on the box."""
+
+    def test_bedrock_tier_builds_litellm_without_a_key(self) -> None:
+        # Bedrock authenticates via the AWS credential chain — no api key needed,
+        # so a bedrock/ tier must NOT fall back to the mock provider.
+        s = Settings(_env_file=None, model_mock=False, fireworks_api_key=None,
+                     anthropic_api_key=None,
+                     model_frontier="bedrock/anthropic.claude-opus-4-8",
+                     model_local="bedrock/anthropic.claude-haiku")
+        provider = ModelGateway._build_provider(s)
+        assert provider.name == "litellm"
+
+    def test_no_keys_and_no_bedrock_falls_back_to_mock(self) -> None:
+        s = Settings(_env_file=None, model_mock=False, fireworks_api_key=None,
+                     anthropic_api_key=None, model_frontier="fireworks_ai/frontier",
+                     model_local="fireworks_ai/local")
+        provider = ModelGateway._build_provider(s)
+        assert provider.name == "mock"
+
+    def test_fireworks_key_builds_litellm(self) -> None:
+        s = Settings(_env_file=None, model_mock=False, fireworks_api_key="fw-test-key",
+                     anthropic_api_key=None, model_frontier="fireworks_ai/frontier",
+                     model_local="fireworks_ai/local")
+        provider = ModelGateway._build_provider(s)
+        assert provider.name == "litellm"

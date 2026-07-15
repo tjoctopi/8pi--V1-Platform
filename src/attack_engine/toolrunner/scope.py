@@ -82,6 +82,31 @@ class _RadixTrie:
             node = child
         return False
 
+    def contains_network(self, network: IPNetwork) -> bool:
+        """True if ``network`` is fully covered by an inserted network.
+
+        A range sweep (e.g. ``nmap 10.5.0.0/24``) is in scope only when the whole
+        range is a subnet of — or equal to — an allow-listed CIDR. We descend the
+        trie by the network's address bits for at most ``prefixlen`` steps; passing
+        a terminal node means a shorter-or-equal allowed prefix contains it. A
+        target that is *broader* than any allowed CIDR never hits a terminal in
+        those steps, so it stays denied (deny-by-default preserved).
+        """
+
+        if self._root.terminal:  # 0.0.0.0/0-style catch-all
+            return True
+        node = self._root
+        addr_int = int(network.network_address)
+        for i in range(network.prefixlen):
+            bit = (addr_int >> (self._bit_width - 1 - i)) & 1
+            child = node.children[bit]
+            if child is None:
+                return False
+            node = child
+            if node.terminal:
+                return True
+        return False
+
     def __len__(self) -> int:
         return self._size
 
@@ -130,11 +155,20 @@ class ScopeEnforcer:
         return False
 
     def allows(self, target: str) -> bool:
-        """Return whether ``target`` (IP or hostname) is in scope."""
+        """Return whether ``target`` (IP, CIDR range, or hostname) is in scope."""
 
         target = target.strip()
         if not target:
             return False
+        # A CIDR sweep (e.g. "10.5.0.0/24") — in scope iff fully contained in an
+        # allow-listed CIDR. Recon legitimately scans a whole authorized range.
+        if "/" in target:
+            try:
+                net = ipaddress.ip_network(target, strict=False)
+            except ValueError:
+                return self._host_allowed(target)
+            trie = self._v4 if isinstance(net, ipaddress.IPv4Network) else self._v6
+            return trie.contains_network(net)
         try:
             ip = ipaddress.ip_address(target)
         except ValueError:
