@@ -11,19 +11,19 @@ variable "env" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance size. t3.medium is the recommended minimum."
+  description = "EC2 instance size. The tool executor is CPU/network-heavy; t3.large is the recommended minimum."
   type        = string
-  default     = "t3.medium"
+  default     = "t3.large"
 }
 
 variable "root_volume_gb" {
-  description = "Root EBS volume size in GB."
+  description = "Root EBS volume size in GB (tool images are large — budget headroom)."
   type        = number
-  default     = 30
+  default     = 40
 }
 
 variable "ssh_cidrs" {
-  description = "CIDR list allowed to SSH (port 22). Restrict to your operator IP(s)."
+  description = "CIDR list allowed to SSH (port 22). Restrict to your operator IP(s). (SSM Session Manager is also enabled and needs no inbound SSH.)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
@@ -41,9 +41,9 @@ variable "repo_url" {
 }
 
 variable "branch" {
-  description = "Git branch to check out."
+  description = "Git branch to check out. The real engine lives on `dev` (main is the legacy prototype); use `dev` or a release branch."
   type        = string
-  default     = "main"
+  default     = "dev"
 }
 
 variable "domain" {
@@ -64,34 +64,49 @@ variable "admin_email" {
   default     = ""
 }
 
-# ──────────────── secrets injected into the app ────────────────
-variable "seed_admin_email" {
-  description = "Admin account email seeded on first boot."
+# ──────────────── secrets / config injected into the engine ────────────────
+variable "ae_api_admin_email" {
+  description = "Admin account email seeded on first boot (AE_API_ADMIN_EMAIL)."
   type        = string
 }
 
-variable "seed_admin_password" {
-  description = "Admin password seeded on first boot (MIN 8 chars, change immediately after first login)."
+variable "ae_api_admin_password" {
+  description = "Admin password seeded on first boot (AE_API_ADMIN_PASSWORD; change after first login)."
   type        = string
   sensitive   = true
 }
 
-variable "jwt_secret" {
-  description = "64-char hex JWT signing secret. Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
+variable "ae_api_jwt_secret" {
+  description = "64-char hex JWT signing secret (AE_API_JWT_SECRET). Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
   type        = string
   sensitive   = true
 }
 
-variable "bedrock_model_id" {
-  description = "Amazon Bedrock model ID / geo inference profile for the Model Gateway. Default = Claude Opus 4.8 (US geo profile). EU: eu.anthropic.claude-opus-4-8, global: global.anthropic.claude-opus-4-8."
+# ──────────────── BYOM model gateway (set at least one, or ae_model_mock=true) ────────────────
+variable "fireworks_api_key" {
+  description = "Fireworks AI API key (FIREWORKS_API_KEY) for the BYOM model gateway."
   type        = string
-  default     = "us.anthropic.claude-opus-4-8"
+  default     = ""
+  sensitive   = true
 }
 
-variable "tool_mode" {
-  description = "auto | real | sim. Real = call CLI binaries (nmap etc); auto = real if installed, sim fallback."
+variable "anthropic_api_key" {
+  description = "Anthropic API key (ANTHROPIC_API_KEY) for the frontier tier via the BYOM gateway."
   type        = string
-  default     = "auto"
+  default     = ""
+  sensitive   = true
+}
+
+variable "ae_model_mock" {
+  description = "When true, the model gateway uses a deterministic mock (no real reasoning). For keyless smoke tests only."
+  type        = bool
+  default     = false
+}
+
+variable "ae_sandbox_network" {
+  description = "Docker network the sandboxed tool containers join so they can reach the authorized targets. Created on the host at boot."
+  type        = string
+  default     = "ae_targets"
 }
 
 variable "tags" {

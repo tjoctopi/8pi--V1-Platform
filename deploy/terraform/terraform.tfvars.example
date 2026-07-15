@@ -1,14 +1,15 @@
-# ── 8pi Terraform (single-EC2) ──
+# ── 8pi Terraform (single-EC2, real engine) ──
 # Copy this file to `terraform.tfvars` and edit the values, then run:
 #   terraform init && terraform apply
 
 # --- AWS ---
 aws_region     = "us-east-1"
 env            = "prod"
-instance_type  = "t3.medium"
-root_volume_gb = 30
+instance_type  = "t3.large"   # tool executor is CPU/network-heavy
+root_volume_gb = 40           # tool images are large
 
-# Restrict SSH to your own IP(s). Multiple CIDRs OK.
+# Restrict SSH to your own IP(s). Multiple CIDRs OK. (SSM Session Manager is enabled
+# too, so you can also connect with no inbound SSH at all.)
 ssh_cidrs = ["0.0.0.0/0"]   # → change to your IP/32
 
 # Optional: paste your existing OpenSSH public key here to reuse a keypair.
@@ -17,21 +18,27 @@ ssh_public_key = ""
 
 # --- App source ---
 repo_url = "https://github.com/YOUR-ORG/8pi.git"   # ← your fork
-branch   = "main"
+branch   = "dev"                                     # the real engine lives on dev
 
 # --- TLS (optional but recommended in prod) ---
 # Leave `domain` empty to skip TLS and serve on the raw EC2 public IP.
 domain    = "app.8pi.ai"             # app runs at this subdomain; marketing site lives at 8pi.ai
 tls_email = ""                       # e.g. "ops@8pi.ai"
 
-# --- Application secrets ---
+# --- Engine auth ---
 # Generate JWT with: python -c "import secrets; print(secrets.token_hex(32))"
-jwt_secret          = "REPLACE_ME_WITH_64_HEX_CHARS"
-seed_admin_email    = "admin@example.com"
-seed_admin_password = "REPLACE_ME_MIN_8_CHARS"
+ae_api_jwt_secret     = "REPLACE_ME_WITH_64_HEX_CHARS"
+ae_api_admin_email    = "admin@8pi.ai"
+ae_api_admin_password = "REPLACE_ME_MIN_8_CHARS"
 
-# auto | real | sim
-tool_mode = "auto"
+# --- BYOM model gateway (set at least one, or ae_model_mock = true for a keyless smoke test) ---
+fireworks_api_key = ""
+anthropic_api_key = ""
+ae_model_mock     = false
+
+# --- Offensive tool sandbox ---
+# Docker network the sandboxed tool containers join to reach authorized targets.
+ae_sandbox_network = "ae_targets"
 
 # Additional AWS tags
 tags = {

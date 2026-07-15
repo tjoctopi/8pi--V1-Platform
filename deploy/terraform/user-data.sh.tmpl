@@ -1,7 +1,8 @@
 #!/bin/bash
 # 8pi EC2 bootstrap (cloud-init user-data). Runs once as root on first boot.
-# Installs Docker + docker compose, clones the repo, writes .env, brings the stack up,
-# then optionally installs a Let's Encrypt cert via certbot + nginx on the host.
+# Installs Docker + docker compose, clones the repo, writes .env (engine AE_* vars),
+# creates the tool sandbox network, pre-pulls tool images, brings the stack up, then
+# optionally installs a Let's Encrypt cert via certbot + nginx on the host.
 
 set -euo pipefail
 exec > >(tee -a /var/log/8pi-bootstrap.log) 2>&1
@@ -29,25 +30,45 @@ cd /opt/8pi
 sudo -u ubuntu git clone --branch "${branch}" "${repo_url}" src
 cd src
 
-# ── .env from Terraform variables ──
+# ── .env for the engine (attack_engine AE_* vars) ──
 cat > /opt/8pi/src/.env <<EOF
-DB_NAME=eightpi_db
-JWT_SECRET=${jwt_secret}
-SEED_ADMIN_EMAIL=${seed_admin_email}
-SEED_ADMIN_PASSWORD=${seed_admin_password}
-SEED_ADMIN_NAME=8pi Admin
-AWS_REGION=${aws_region}
-BEDROCK_MODEL_ID=${bedrock_model_id}
-TOOL_MODE=${tool_mode}
+AE_ENV=prod
+AE_LOG_JSON=true
+# auth / shell
+AE_API_JWT_SECRET=${ae_api_jwt_secret}
+AE_API_ADMIN_EMAIL=${ae_api_admin_email}
+AE_API_ADMIN_PASSWORD=${ae_api_admin_password}
+AE_API_ORIGINS=$([ -n "${domain}" ] && echo "https://${domain}" || echo "")
+# BYOM model gateway
+FIREWORKS_API_KEY=${fireworks_api_key}
+ANTHROPIC_API_KEY=${anthropic_api_key}
+AE_MODEL_MOCK=${ae_model_mock}
+# offensive tool sandbox
+AE_SANDBOX_BACKEND=docker
+AE_SANDBOX_NETWORK=${ae_sandbox_network}
+# governance state (in-proc defaults; set Postgres/Redis/Neo4j here for prod)
+AE_AUDIT_BACKEND=sqlite
+AE_EVENTBUS_BACKEND=memory
+AE_GRAPH_BACKEND=networkx
+# web
 HTTP_PORT=80
-COOKIE_SECURE=$([ -n "${domain}" ] && echo true || echo false)
-FRONTEND_ORIGINS=
 REACT_APP_BACKEND_URL=
 EOF
 chmod 600 /opt/8pi/src/.env
 chown ubuntu:ubuntu /opt/8pi/src/.env
 
-# ── Bring the stack up ──
+# ── Offensive tool sandbox network + pre-pulled tool images ──
+# Tool containers join this network to reach the authorized targets.
+docker network create "${ae_sandbox_network}" 2>/dev/null || true
+for img in instrumentisto/nmap:latest projectdiscovery/httpx:latest \
+           projectdiscovery/nuclei:latest projectdiscovery/katana:latest secsi/ffuf:latest; do
+  docker pull "$img" || echo "[8pi] warn: could not pre-pull $img (will pull on demand)"
+done
+# Seed nuclei templates into a named volume so scans never phone home on first run.
+docker run --rm -v ae-nuclei-templates:/root/nuclei-templates \
+  projectdiscovery/nuclei:latest -update-templates || echo "[8pi] warn: nuclei template seed failed"
+
+# ── Build + bring the stack up (api = real engine, frontend = SPA) ──
 cd /opt/8pi/src
 sudo -u ubuntu docker compose --project-name 8pi build
 sudo -u ubuntu docker compose --project-name 8pi up -d

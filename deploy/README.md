@@ -22,9 +22,12 @@ spawns on the **host Docker** via a mounted socket (docker-out-of-docker). So:
 
 | Path | Time | You need |
 | --- | --- | --- |
-| **A · Docker Compose on an EC2** (supported today) | ~10 min | An EC2 with Docker + a public IP |
-| B · Terraform single-EC2 | — | ⚠️ being migrated from the prototype env — see below |
-| C · CloudFormation single-EC2 | — | ⚠️ being migrated — see below |
+| **A · Docker Compose on an EC2** | ~10 min | An EC2 with Docker + a public IP |
+| **B · Terraform single-EC2** | ~10 min | AWS creds + Terraform ≥ 1.6 |
+| **C · CloudFormation single-EC2** | ~10 min | AWS CLI |
+
+All three deploy the **real engine** stack. B & C provision the infra (VPC / EC2 / EIP /
+SG / SSM) and run `docker compose up` on first boot with the engine's `AE_*` env.
 
 ---
 
@@ -106,12 +109,34 @@ API's security group on 5432/6379/7687 **inside the VPC (never public).**
 
 ---
 
-## Paths B & C · Terraform / CloudFormation  ⚠️ migration in progress
-`deploy/terraform/` and `deploy/cloudformation/stack.yaml` still provision the single-EC2
-infra correctly (VPC, EC2, EIP, IAM, `docker compose up` on boot), **but their env wiring
-(`user-data`, tfvars, CFN params) still passes the old prototype variables**
-(`JWT_SECRET`, `SEED_ADMIN_*`, `BEDROCK_MODEL_ID`) instead of the engine's `AE_*` vars.
-Until they're updated, **use Path A.** Migrating the IaC env to `AE_*` is a tracked follow-up.
+## Path B · Terraform (one command)
+```bash
+cd deploy/terraform
+cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars   # repo_url, branch=dev, ae_api_jwt_secret, ae_api_admin_*,
+                           # fireworks_api_key and/or anthropic_api_key, domain + tls_email
+terraform init && terraform apply
+```
+Grab the outputs (`app_url`, `ssh_command`). Watch boot with
+`sudo tail -f /var/log/8pi-bootstrap.log` (~5 min). The instance has an **SSM** role, so you
+can also open a shell via Session Manager with no inbound SSH. Bootstrap writes the engine
+`AE_*` `.env`, creates the tool network, pre-pulls tool images, and brings up `api` + `frontend`.
+
+## Path C · CloudFormation
+```bash
+aws cloudformation deploy \
+  --stack-name 8pi-prod \
+  --template-file deploy/cloudformation/stack.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    RepoUrl=https://github.com/YOUR-ORG/8pi.git Branch=dev \
+    AeApiJwtSecret="$(python3 -c 'import secrets;print(secrets.token_hex(32))')" \
+    AeApiAdminEmail=admin@8pi.ai AeApiAdminPassword=REPLACE_ME \
+    FireworksApiKey=REPLACE_ME AeSandboxNetwork=ae_targets \
+    SshCidr=0.0.0.0/0
+```
+Both B & C provision an IAM role with **`AmazonSSMManagedInstanceCore`** (Session Manager;
+no Bedrock — the model gateway is BYOM via API keys).
 
 ---
 

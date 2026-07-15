@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "8pi v1 — single-EC2 stack (VPC + subnet + IGW + EIP + SG + Ubuntu 22.04)"
+Description: "8pi v1 — single-EC2 stack running the REAL engine (VPC + subnet + IGW + EIP + SG + Ubuntu 22.04)"
 
 Parameters:
   RepoUrl:
@@ -7,42 +7,56 @@ Parameters:
     Description: "Public git URL of your 8pi fork (e.g. https://github.com/you/8pi.git)"
   Branch:
     Type: String
-    Default: main
+    Default: dev
+    Description: "The real engine lives on `dev` (main is the legacy prototype)."
   InstanceType:
     Type: String
-    Default: t3.medium
+    Default: t3.large
     AllowedValues: [t3.medium, t3.large, t3.xlarge, m6i.large, m6i.xlarge]
   RootVolumeGb:
     Type: Number
-    Default: 30
+    Default: 40
   SshCidr:
     Type: String
     Default: 0.0.0.0/0
-    Description: "CIDR allowed to SSH — restrict to your IP/32 in prod."
+    Description: "CIDR allowed to SSH — restrict to your IP/32 in prod. (SSM Session Manager is also enabled.)"
   Domain:
     Type: String
     Default: ""
-    Description: "FQDN for TLS. Empty = serve on raw IP without HTTPS."
+    Description: "FQDN for the console (used for CORS origins). Empty = serve on raw IP."
   TlsEmail:
     Type: String
     Default: ""
-  SeedAdminEmail:
+  AeApiAdminEmail:
     Type: String
-  SeedAdminPassword:
+    Description: "Admin account email seeded on first boot (AE_API_ADMIN_EMAIL)."
+  AeApiAdminPassword:
     Type: String
     NoEcho: true
-  JwtSecret:
+    Description: "Admin password seeded on first boot (AE_API_ADMIN_PASSWORD)."
+  AeApiJwtSecret:
     Type: String
     NoEcho: true
     Description: "64-char hex. python -c 'import secrets;print(secrets.token_hex(32))'"
-  BedrockModelId:
+  FireworksApiKey:
     Type: String
-    Default: "us.anthropic.claude-opus-4-8"
-    Description: "Amazon Bedrock model ID / geo inference profile (Claude Opus 4.8 US default)."
-  ToolMode:
+    NoEcho: true
+    Default: ""
+    Description: "Fireworks AI API key (BYOM gateway). Set this and/or AnthropicApiKey, or AeModelMock=true."
+  AnthropicApiKey:
     Type: String
-    Default: auto
-    AllowedValues: [auto, real, sim]
+    NoEcho: true
+    Default: ""
+    Description: "Anthropic API key (frontier tier via BYOM gateway)."
+  AeModelMock:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "true = deterministic mock model (keyless smoke test only)."
+  AeSandboxNetwork:
+    Type: String
+    Default: ae_targets
+    Description: "Docker network the sandboxed tool containers join to reach authorized targets."
 
 Mappings:
   AmiByRegion:
@@ -108,6 +122,8 @@ Resources:
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
         - { IpProtocol: tcp, FromPort: 22,  ToPort: 22,  CidrIp: !Ref SshCidr }
 
+  # SSM Session Manager (connect with no inbound SSH). No Bedrock IAM — the model
+  # gateway uses provider API keys (BYOM) from .env.
   AppRole:
     Type: AWS::IAM::Role
     Properties:
@@ -117,16 +133,8 @@ Resources:
           - Effect: Allow
             Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: bedrock-invoke
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                  - bedrock:InvokeModelWithResponseStream
-                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -168,21 +176,30 @@ Resources:
           sudo -u ubuntu git clone --branch "${Branch}" "${RepoUrl}" src
           cd src
           cat > /opt/8pi/src/.env <<EOF
-          DB_NAME=eightpi_db
-          JWT_SECRET=${JwtSecret}
-          SEED_ADMIN_EMAIL=${SeedAdminEmail}
-          SEED_ADMIN_PASSWORD=${SeedAdminPassword}
-          SEED_ADMIN_NAME=8pi Admin
-          AWS_REGION=${AWS::Region}
-          BEDROCK_MODEL_ID=${BedrockModelId}
-          TOOL_MODE=${ToolMode}
+          AE_ENV=prod
+          AE_LOG_JSON=true
+          AE_API_JWT_SECRET=${AeApiJwtSecret}
+          AE_API_ADMIN_EMAIL=${AeApiAdminEmail}
+          AE_API_ADMIN_PASSWORD=${AeApiAdminPassword}
+          AE_API_ORIGINS=$([ -n "${Domain}" ] && echo "https://${Domain}" || echo "")
+          FIREWORKS_API_KEY=${FireworksApiKey}
+          ANTHROPIC_API_KEY=${AnthropicApiKey}
+          AE_MODEL_MOCK=${AeModelMock}
+          AE_SANDBOX_BACKEND=docker
+          AE_SANDBOX_NETWORK=${AeSandboxNetwork}
+          AE_AUDIT_BACKEND=sqlite
+          AE_EVENTBUS_BACKEND=memory
+          AE_GRAPH_BACKEND=networkx
           HTTP_PORT=80
-          COOKIE_SECURE=false
-          FRONTEND_ORIGINS=
           REACT_APP_BACKEND_URL=
           EOF
           chmod 600 /opt/8pi/src/.env
           chown ubuntu:ubuntu /opt/8pi/src/.env
+          docker network create "${AeSandboxNetwork}" 2>/dev/null || true
+          for img in instrumentisto/nmap:latest projectdiscovery/httpx:latest projectdiscovery/nuclei:latest projectdiscovery/katana:latest secsi/ffuf:latest; do
+            docker pull "$img" || echo "[8pi] warn: could not pre-pull $img"
+          done
+          docker run --rm -v ae-nuclei-templates:/root/nuclei-templates projectdiscovery/nuclei:latest -update-templates || true
           sudo -u ubuntu docker compose --project-name 8pi build
           sudo -u ubuntu docker compose --project-name 8pi up -d
           ufw --force reset >/dev/null
@@ -200,7 +217,7 @@ Resources:
 
 Outputs:
   AppUrl:
-    Description: "URL to open (~4 min after stack create)"
+    Description: "URL to open (~5 min after stack create)"
     Value: !Sub "http://${Eip}"
   PublicIp:
     Value: !Ref Eip

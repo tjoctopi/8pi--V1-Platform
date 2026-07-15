@@ -124,7 +124,9 @@ resource "aws_key_pair" "ssh" {
   tags       = local.common_tags
 }
 
-# ──────────────── IAM instance role (Bedrock access, keyless) ────────────────
+# ──────────────── IAM instance role (SSM Session Manager — connect with no inbound SSH) ────────────────
+# The BYOM model gateway uses provider API keys (Fireworks/Anthropic) from .env, so no
+# Bedrock IAM is needed. SSM lets operators open a shell without exposing port 22.
 resource "aws_iam_role" "app" {
   name = "${local.name}-role"
   assume_role_policy = jsonencode({
@@ -138,20 +140,9 @@ resource "aws_iam_role" "app" {
   tags = local.common_tags
 }
 
-resource "aws_iam_role_policy" "bedrock" {
-  name = "${local.name}-bedrock"
-  role = aws_iam_role.app.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ]
-      Resource = "*"
-    }]
-  })
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.app.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "app" {
@@ -176,17 +167,17 @@ data "aws_ami" "ubuntu" {
 
 locals {
   user_data = templatefile("${path.module}/user-data.sh.tmpl", {
-    repo_url            = var.repo_url
-    branch              = var.branch
-    domain              = var.domain
-    admin_email         = var.admin_email
-    seed_admin_email    = var.seed_admin_email
-    seed_admin_password = var.seed_admin_password
-    jwt_secret          = var.jwt_secret
-    aws_region          = var.aws_region
-    bedrock_model_id    = var.bedrock_model_id
-    tool_mode           = var.tool_mode
-    tls_email           = var.tls_email
+    repo_url              = var.repo_url
+    branch                = var.branch
+    domain                = var.domain
+    tls_email             = var.tls_email
+    ae_api_admin_email    = var.ae_api_admin_email
+    ae_api_admin_password = var.ae_api_admin_password
+    ae_api_jwt_secret     = var.ae_api_jwt_secret
+    fireworks_api_key     = var.fireworks_api_key
+    anthropic_api_key     = var.anthropic_api_key
+    ae_model_mock         = var.ae_model_mock
+    ae_sandbox_network    = var.ae_sandbox_network
   })
 }
 
