@@ -130,3 +130,39 @@ class TestRadixTrieCorrectness:
         stats = enf.stats()
         assert stats["cidrs_v4"] == 2
         assert stats["hosts"] == 2
+
+
+class TestCidrSweep:
+    """A range sweep (e.g. `nmap 10.5.0.0/24`) is in scope only when the whole
+    range is contained in an allow-listed CIDR — deny-by-default preserved."""
+
+    def test_cidr_equal_to_allowed_is_in_scope(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.4.0/24") is True
+
+    def test_sub_cidr_of_allowed_is_in_scope(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.4.0/26") is True
+        assert enf.allows("10.0.4.128/25") is True
+
+    def test_single_host_as_slash32_in_scope(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.4.10/32") is True
+
+    def test_supernet_of_allowed_is_refused(self, scope: Scope) -> None:
+        # /16 is broader than the allowed /24 → must NOT be allowed.
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.0.0/16") is False
+
+    def test_out_of_scope_cidr_refused(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("172.16.0.0/24") is False
+
+    def test_check_passes_for_in_scope_sweep(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        enf.check("10.0.4.0/24")  # must not raise
+
+    def test_check_raises_for_broad_sweep(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        with pytest.raises(ScopeViolationError):
+            enf.check("10.0.0.0/8")
