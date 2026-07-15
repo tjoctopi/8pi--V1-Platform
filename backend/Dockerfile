@@ -7,15 +7,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive
 
 # Install runtime CLI tools used by the Tool Service (real adapters).
-# nmap = recon; sqlmap = exploit; gobuster / dirb = dir-brute; wapiti = generic web scanner;
-# nikto & wpscan are pulled from their upstream sources (not in Debian bookworm apt).
+# nmap = recon; sqlmap = exploit; dirb = dir-brute; gobuster from its GitHub
+# release (not in Debian bookworm); wapiti dropped (not packaged) — the Tool
+# Service falls back to sim for any missing binary (TOOL_MODE=auto).
+# nikto & wpscan are pulled from upstream sources; nikto needs perl JSON +
+# XML::Writer (libjson-perl, libxml-writer-perl) to run without erroring.
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-      nmap gobuster dirb sqlmap wapiti \
-      git perl libnet-ssleay-perl libwhisker2-perl \
+      nmap dirb sqlmap \
+      git perl libnet-ssleay-perl libwhisker2-perl libjson-perl libxml-writer-perl \
       ruby ruby-dev build-essential \
       libcurl4-openssl-dev libssl-dev libxml2-dev libxslt1-dev \
       ca-certificates curl tini && \
+    curl -fsSL https://github.com/OJ/gobuster/releases/download/v3.8.2/gobuster_Linux_x86_64.tar.gz -o /tmp/gb.tgz && \
+    tar -xzf /tmp/gb.tgz -C /usr/local/bin gobuster && \
+    chmod +x /usr/local/bin/gobuster && rm -f /tmp/gb.tgz && \
     git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
     ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
     chmod +x /opt/nikto/program/nikto.pl && \
