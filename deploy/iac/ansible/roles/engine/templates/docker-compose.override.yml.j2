@@ -1,0 +1,11 @@
+# Managed by Ansible. Injects the full .env into the api container (so AE_MODEL_*,
+# AWS_REGION, and the managed-backend DSNs reach the engine) and joins the api to
+# the external data network where postgres/redis/neo4j live.
+services:
+  api:
+    env_file: [.env]
+    networks: [eightpi, data_net]
+networks:
+  data_net:
+    external: true
+    name: {{ data_network_name }}

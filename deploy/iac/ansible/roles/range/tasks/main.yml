@@ -1,0 +1,18 @@
+---
+# Brings up the intentionally-vulnerable range. This creates the docker network
+# `attack-engine-range_range_net` that the engine backend and sandboxed tools
+# join. Targets are bound to localhost only; the range is never exposed.
+#
+# Profiles are configurable (range_profiles). The `ad` profile pulls
+# ghcr.io/dockur/samba-domain which needs a pullable image / ghcr auth; it is
+# opt-in so a registry denial does not block the core range + C2.
+- name: "Bring up the cyber range (profiles: {{ range_profiles | join(', ') }})"
+  ansible.builtin.shell: >
+    docker compose -f range/docker-compose.yml
+    {{ range_profiles | map('regex_replace', '^', '--profile ') | join(' ') }}
+    up -d
+  args:
+    chdir: "{{ app_dir }}"
+    executable: /bin/bash
+  register: rangeup
+  changed_when: true

@@ -18,7 +18,7 @@ WORKDIR /app
 # Install the engine + api extra (fastapi, uvicorn, pyjwt). Deps first for layer caching.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[api]"
+RUN pip install --no-cache-dir ".[api,postgres,redis,neo4j]"
 
 # Persistent dir for the SQLite audit chain + shell (users/engagement metadata).
 RUN mkdir -p /app/data

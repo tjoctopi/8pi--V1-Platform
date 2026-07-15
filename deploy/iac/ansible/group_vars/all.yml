@@ -1,0 +1,35 @@
+---
+# ── Connection: SSM Session Manager (NO SSH) ───────────────────────────────
+ansible_connection: community.aws.aws_ssm
+ansible_aws_ssm_region: us-east-1
+ansible_aws_ssm_bucket_name: "{{ ssm_transfer_bucket | default('CHANGE-ME-ssm-transfer-bucket') }}"
+ansible_aws_ssm_plugin: "{{ ssm_plugin_path | default('/opt/homebrew/bin/session-manager-plugin') }}"
+ansible_shell_type: sh
+
+# ── AWS / project ──────────────────────────────────────────────────────────
+aws_region: us-east-1
+project_name: 8pi-engine-dev
+secrets_prefix: "/8pi-engine-dev"
+
+# ── App source (the REAL engine, dev branch) ─────────────────────────────────
+app_dir: /opt/8pi/engine
+repo_url: "https://github.com/tjoctopi/8pi--V1-Platform.git"
+repo_branch: dev
+
+# ── Managed engine backends (wired via AE_* into the api container) ──────────
+ae_pg_db: attack_engine
+ae_pg_user: ae
+
+# ── Model gateway (LiteLLM/BYOM). Bedrock is keyless via the instance role,
+#    but note: the current engine gateway only builds a real provider when a
+#    Fireworks/Anthropic key is set — otherwise it uses MockProvider. ──────────
+bedrock_model_id: "us.anthropic.claude-opus-4-8"
+ae_model_frontier: "bedrock/us.anthropic.claude-opus-4-8"
+
+# ── Docker networks ──────────────────────────────────────────────────────────
+data_network_name: "8pi_data_net"
+range_network_name: "attack-engine-range_range_net"
+
+# ── API shell ────────────────────────────────────────────────────────────────
+admin_email: "admin@8pi.io"
+http_port: 80

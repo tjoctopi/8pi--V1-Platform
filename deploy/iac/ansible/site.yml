@@ -1,0 +1,17 @@
+---
+# 8pi attack-engine dev/test deployment (config + app), executed over SSM.
+# Terraform must have provisioned the host first (tag Project=8pi Env=engine-dev).
+#
+# Order matters: docker before anything using it; the data network and the
+# range network must exist before the engine backend (which joins both) starts.
+- name: Deploy 8pi attack engine (dev/test)
+  hosts: all
+  gather_facts: true
+  become: true
+  roles:
+    - common # base packages, repo checkout, .env from Secrets Manager
+    - docker # Docker Engine + compose + shared data network
+    - databases # postgres, redis, neo4j on the data network
+    - range # isolated vulnerable range (creates range_net)
+    - engine # console + attack-engine stack (joins data_net + range_net)
+    - verify # health checks

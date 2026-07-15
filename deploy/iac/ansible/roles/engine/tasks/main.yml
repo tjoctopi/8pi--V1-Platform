@@ -1,0 +1,52 @@
+---
+- name: Render .env for the real engine from Secrets Manager (keyless via instance role)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    R="{{ aws_region }}"; P="{{ secrets_prefix }}"
+    get() { aws secretsmanager get-secret-value --secret-id "$P/$1" --query SecretString --output text --region "$R"; }
+    JWT="$(get jwt-secret)"; ADMINPW="$(get seed-admin-password)"; PGPW="$(get postgres-password)"; NEOPW="$(get neo4j-password)"
+    cat > "{{ app_dir }}/.env" <<EOF
+    AE_ENV=prod
+    AE_LOG_LEVEL=INFO
+    AE_LOG_JSON=true
+    AE_AUDIT_BACKEND=postgres
+    AE_AUDIT_POSTGRES_DSN=postgresql://{{ ae_pg_user }}:$PGPW@8pi-postgres:5432/{{ ae_pg_db }}
+    AE_EVENTBUS_BACKEND=redis
+    AE_EVENTBUS_REDIS_URL=redis://8pi-redis:6379/0
+    AE_GRAPH_BACKEND=neo4j
+    AE_NEO4J_URL=bolt://8pi-neo4j:7687
+    AE_NEO4J_USER=neo4j
+    AE_NEO4J_PASSWORD=$NEOPW
+    AE_NEO4J_DATABASE=neo4j
+    AE_SANDBOX_BACKEND=docker
+    AE_SANDBOX_NETWORK={{ range_network_name }}
+    AE_MODEL_FRONTIER={{ ae_model_frontier }}
+    AE_MODEL_LOCAL={{ ae_model_frontier }}
+    AE_MODEL_MOCK=false
+    AWS_REGION={{ aws_region }}
+    AWS_DEFAULT_REGION={{ aws_region }}
+    AE_API_JWT_SECRET=$JWT
+    AE_API_ADMIN_EMAIL={{ admin_email }}
+    AE_API_ADMIN_PASSWORD=$ADMINPW
+    AE_API_ORIGINS=
+    HTTP_PORT={{ http_port }}
+    EOF
+    chmod 600 "{{ app_dir }}/.env"
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: true
+
+- name: Render compose override (inject full .env into api + join the DB network)
+  ansible.builtin.template:
+    src: docker-compose.override.yml.j2
+    dest: "{{ app_dir }}/docker-compose.override.yml"
+    mode: "0644"
+
+- name: Build and bring up the real-engine stack (api + frontend)
+  ansible.builtin.command:
+    cmd: docker compose up -d --build --remove-orphans
+    chdir: "{{ app_dir }}"
+  register: engineup
+  changed_when: true
