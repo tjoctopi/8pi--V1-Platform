@@ -97,6 +97,24 @@ def test_from_settings_falls_back_to_mock(test_settings: Settings) -> None:
     assert engine.sandbox.name == "noop"
 
 
+def test_engagement_foothold_factory(engine: Engine, range_scope: Scope) -> None:
+    """The engine wires a governed FootholdRunner over the engagement's C2 backend."""
+
+    from attack_engine.c2.backend import MockC2Backend
+    from attack_engine.governance.gates import approve_all
+
+    # Tier-0 scope ⇒ establishing a foothold gates; approve it for the test.
+    engagement = engine.engagement(range_scope, gate_responder=approve_all())
+    runner = engagement.foothold(MockC2Backend({"whoami": "root", "default": "ok"}))
+    fh = runner.establish("10.5.0.10")  # in range_scope's 10.5.0.0/24
+    assert fh is not None and fh.ok
+    assert fh.proof["whoami"] == "root"
+    # The session is tracked on the engagement's own SessionManager.
+    assert engagement.session_manager.sessions(active_only=True)
+    # Kill-switch teardown releases it.
+    assert runner.teardown() == 1
+
+
 def test_load_scope_from_example_file() -> None:
     example = Path(__file__).resolve().parents[1] / "examples/engagement-range.scope.yaml"
     scope = load_scope(example)

@@ -107,6 +107,28 @@ class Settings(BaseSettings):
     model_mock: bool = False
     model_timeout_sec: int = 120
     model_max_retries: int = 2
+    #: Validation retries for structured (JSON-schema) output. A malformed or
+    #: schema-violating reply is fed back to the model with the error, up to this
+    #: many times, before the gateway gives up. Separate from transient-failure
+    #: retries (``model_max_retries``) because the failure mode is different.
+    model_json_max_retries: int = 2
+
+    # --- CVE / exploit-intel feeds (offline files, refreshed by a scheduled job) ---
+    #: Cached NVD 2.0 + CISA-KEV JSON. When BOTH are set the engine loads the real
+    #: feed; otherwise it falls back to the bundled seed (dev/pilot only).
+    cve_nvd_path: str | None = None
+    cve_kev_path: str | None = None
+    #: Optional FIRST.org EPSS CSV and a public-exploit CVE-id list (exploit-maturity
+    #: from exploit-DB/Metasploit/nuclei). Enrich scoring when present.
+    cve_epss_path: str | None = None
+    cve_exploit_ids_path: str | None = None
+
+    # --- exploitability calibration ---
+    #: Labelled ``(score,label)`` samples (JSON) used to fit the probability
+    #: calibrator. When unset, exploit probabilities are the raw (uncalibrated)
+    #: model output. Method is "isotonic" (default) or "platt".
+    calibration_path: str | None = None
+    calibration_method: str = "isotonic"
 
     def is_prod(self) -> bool:
         return self.env is Environment.PROD

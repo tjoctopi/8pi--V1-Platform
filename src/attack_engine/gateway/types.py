@@ -23,6 +23,18 @@ class ChatMessage(StrictModel):
     def user(cls, content: str) -> ChatMessage:
         return cls(role="user", content=content)
 
+    @classmethod
+    def assistant(cls, content: str) -> ChatMessage:
+        """A prior model turn — used to replay a bad reply during a retry."""
+
+        return cls(role="assistant", content=content)
+
+    @classmethod
+    def tool(cls, content: str) -> ChatMessage:
+        """A tool-result turn fed back to the model (multi-turn reasoning)."""
+
+        return cls(role="tool", content=content)
+
     def to_dict(self) -> dict[str, str]:
         return {"role": self.role, "content": self.content}
 

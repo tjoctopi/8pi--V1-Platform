@@ -133,6 +133,28 @@ class ModelGatewayError(AttackEngineError):
     """A model completion failed after retries, or was misconfigured."""
 
 
+class StructuredOutputError(ModelGatewayError):
+    """The model did not return JSON matching the requested schema.
+
+    Raised only after the validation-retry budget is exhausted — i.e. the model
+    was given its own bad output plus the validation error and still could not
+    produce a conforming object. The underlying parse/validation error is chained.
+    """
+
+
+class BudgetExceededError(ModelGatewayError):
+    """A per-engagement token budget was exhausted before/at a model call.
+
+    Expected control flow (like a scope refusal), not a fault: it stops an agent
+    loop from spending past the ceiling the engagement authorized.
+    """
+
+    def __init__(self, spent: int, limit: int) -> None:
+        self.spent = spent
+        self.limit = limit
+        super().__init__(f"token budget exceeded: spent={spent} limit={limit}")
+
+
 # --- Agent runtime -------------------------------------------------------------
 
 
