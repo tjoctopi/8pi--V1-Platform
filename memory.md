@@ -149,6 +149,25 @@ _Last updated: 2026-07-16_
 - **Next candidates:** Phase E (AD/lateral), remaining Phase D depth (auth/session, more oracles), or close the
   live-range gates — user to steer.
 
+## 2026-07-17 — Phase E started (Identity/AD) on branch `feat/phase-e-identity-ad`
+- Branched off the A–D tip (`feat/gateway-v2-structured-output`, PR #12 open into dev) so E builds on A–D.
+- **E1 enriched abuse graph** (`ad/graph.py` + `ad/collect.py`): added domain-takeover edge types (DCSync,
+  AllowedToDelegate, AllowedToAct, AddKeyCredentialLink, Owns, ADCSESC1/ESC8, SQLAdmin) with ATT&CK+cost;
+  DOMAIN-kind principals auto high-value; Kerberoast/AS-REP = credential leads via `mark_roastable`/`roastable()`
+  (not free edges). `from_bloodhound`'s existing `aces` right-name path handles the new ACL edges automatically;
+  added `domains`/`kerberoastable`/`asrep_roastable` keys. Proven: realistic collection → foothold→DA path.
+- **E2 Identity specialist** (`agents/identity_specialist.py`): `ADObserver` (bloodhound data → graph + `ad-path`
+  belief; kerberoast → `ad-credential` lead + roastable flag; `ingest_collection` is the tested entry),
+  `build_identity_loop` mirrors recon/web. WorldModel gained `ad_graph`/`set_ad_graph`/`mark_owned`/
+  `owned_principals`/`domain_admin_paths` (lazy ADGraph, TYPE_CHECKING import to avoid layering weight).
+  New `DomainAdminObjective` (orchestrator/objective.py) fires when a path to a high-value target exists.
+- **Green: 637 tests, ruff+mypy clean (167 src files).** Uncommitted → will commit on the E branch.
+- **Honest gate status:** E capability (deep graph + AD reasoning + fireable DA objective) built + tested OFFLINE.
+  Live gate (foothold→DA) BLOCKED on infra the current range lacks: an **AD-forest range** (no Windows/Samba-AD
+  DC up — range is Juice/DVWA/Metasploitable Linux). Remaining: E3 credential lifecycle (crack), E4 lateral exec
+  (wmiexec/psexec/winrm over C2 SOCKS), live BloodHound collection (sandbox file-artifact retrieval — wrapper
+  emits only counts; real bloodhound-python writes JSON files), + stand up the AD range. See [[8pi-live-range-available]].
+
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
   offensive platform — **full adversary emulation** (external web → internal network → AD →

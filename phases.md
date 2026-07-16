@@ -170,10 +170,28 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     The web-shell session is a command-exec channel; upgrading it to a Meterpreter/Sliver beacon is the
     `MsfFootholdLauncher`/Sliver path (needs msfrpcd/Sliver deployed). Also: autonomous auth/session (unblocks
     IDOR graduation) + more class oracles (deser/XXE/JWT/GraphQL).
-- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ☐
+- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2 built + green; needs AD-forest range for live gate*
   Native AD tooling (impacket/certipy/ldap3) → full abuse graph (Kerberoast / ADCS ESC1-8 / delegation / DCSync
   / trusts) → credential lifecycle (crack→PtH→escalate) → real lateral execution → grounded path planning over
   real edges. **Gate:** foothold → Domain Admin on the AD-forest range.
+  - ✅ E1 Enriched abuse graph — `ad/graph.py` + `ad/collect.py`: added the domain-takeover primitives as typed
+    BloodHound edges with ATT&CK + cost (DCSync T1003.006, constrained-delegation/AllowedToDelegate T1558.003,
+    RBCD/AllowedToAct T1558, shadow-creds/AddKeyCredentialLink T1556, Owns, ADCS ESC1/ESC8 T1649, SQLAdmin);
+    domain objects are auto high-value (controlling the domain = takeover); Kerberoast/AS-REP tracked as
+    *credential leads* (flags, not free edges — acquiring them needs a crack). `from_bloodhound` lays them all
+    from collected data (the `aces` right-name path covers the new ACL edges for free). Proven offline: a
+    realistic collection yields a foothold→Domain-Admin path (alice → HelpDesk → RBCD → DCSync → domain).
+  - ✅ E2 Identity/AD specialist on the loop — `agents/identity_specialist.py`: `ADObserver` folds identity tool
+    output into the world model's **identity attack graph** + beliefs (`ad-path` from a discovered route,
+    `ad-credential` from roastable accounts); `build_identity_loop` mirrors the recon/web specialists. World
+    model gained an AD-graph + owned-principal set (`ad_graph`/`mark_owned`/`domain_admin_paths`); a new
+    **`DomainAdminObjective`** fires deterministically once a path to a high-value target exists (finally a
+    fireable DA objective — the predicate objective.py said would "arrive with Phase E").
+  - ⏳ Remaining for the gate (all need an **AD-forest range**, which the current Linux range lacks): credential
+    lifecycle (E3: capture→crack→PtH/PtT→escalate), real lateral execution over C2/SOCKS (E4:
+    wmiexec/psexec/winrm), live BloodHound collection (needs sandbox file-artifact retrieval — the wrapper emits
+    counts, real bloodhound-python writes JSON files), and standing up the range itself (Samba-AD DC or Windows
+    forest). Then run foothold→Domain-Admin live.
 - **Phase F — Full adversary emulation.** ☐
   Autonomous campaign across the whole chain, adversary profiles, T2/T3 autonomy, gated evasion testing.
   **Gate:** external → Domain Admin, unattended, fully audited.

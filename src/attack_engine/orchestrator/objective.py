@@ -7,10 +7,10 @@ world model that says when we are done. Satisfaction is checked by code, not
 judged by the model (rule #1) — the LLM decides *how* to pursue a goal; whether
 it is *met* is a deterministic test.
 
-Only objectives that are meaningful with today's capabilities live here
-(surface mapping and belief confidence). Goals that need a real foothold or the
-owned-set (ReachPrivilege, DomainAdmin) arrive with Phases C/E, so we don't ship
-a predicate that can never fire.
+Only objectives that are meaningful with today's capabilities live here. Surface
+mapping and belief confidence were the first; :class:`DomainAdminObjective`
+arrives with Phase E now that the world model carries an identity attack graph
+and an owned-principal set — so its predicate genuinely fires.
 """
 
 from __future__ import annotations
@@ -81,3 +81,25 @@ class ConfidenceObjective(Objective):
             if h.confidence >= self.threshold:
                 return True
         return False
+
+
+class DomainAdminObjective(Objective):
+    """Reach Domain Admin: an identity attack path from an owned principal to a
+    high-value target (Domain Admins / the domain object).
+
+    Satisfied deterministically the moment the world model's identity graph
+    contains such a path from the current owned-principal set — the same
+    shortest-path pathing BloodHound/the planner use. Confirmation that a hop
+    *worked* is still a Finding/oracle's word (rule #1); this only asks whether a
+    route is *known*.
+    """
+
+    def describe(self) -> str:
+        return (
+            "Reach Domain Admin: collect the identity graph, own a starting "
+            "principal, and find an attack path to a Domain Admins / domain-object "
+            "target — Kerberoast, DCSync, delegation/RBCD, ADCS or ACL abuse."
+        )
+
+    def is_satisfied(self, world_model: WorldModel) -> bool:
+        return bool(world_model.domain_admin_paths())
