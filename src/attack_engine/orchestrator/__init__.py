@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .controller import ControllerResult, ObjectiveController
+from .objective import ConfidenceObjective, MapSurfaceObjective, Objective
 from .orchestrator import LoopResult, Orchestrator
 from .plan import AttackPlan, Phase, build_plan, prioritize_targets
 from .report import EngagementReport, build_report
@@ -17,4 +19,9 @@ __all__ = [
     "RetestRunner",
     "EngagementReport",
     "build_report",
+    "ObjectiveController",
+    "ControllerResult",
+    "Objective",
+    "MapSurfaceObjective",
+    "ConfidenceObjective",
 ]

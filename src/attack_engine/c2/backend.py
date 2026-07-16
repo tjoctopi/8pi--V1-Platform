@@ -29,6 +29,15 @@ class C2Backend(Protocol):
         """Run one command on the session and return its (bounded) output."""
         ...
 
+    def close(self, session: Session) -> None:
+        """Tear down the underlying transport for ``session`` (kill-switch/teardown).
+
+        Idempotent; safe to call on an already-dead session. Bookkeeping (marking
+        the Session CLOSED) is the SessionManager's job — this releases the real
+        channel (an msfrpc session, a Sliver beacon handle).
+        """
+        ...
+
 
 class MockC2Backend:
     """In-memory backend for tests/dry-runs — canned per-command output.
@@ -42,12 +51,17 @@ class MockC2Backend:
         self._responses = responses or {}
         self._alive = alive
         self.commands: list[tuple[str, str]] = []  # (session_id, command)
+        self.closed: list[str] = []  # session ids torn down
 
     def alive(self, session: Session) -> bool:
-        return self._alive
+        return self._alive and session.id not in self.closed
 
     def run_command(self, session: Session, command: str) -> str:
         self.commands.append((session.id, command))
         if command in self._responses:
             return self._responses[command]
         return self._responses.get("default", "")
+
+    def close(self, session: Session) -> None:
+        if session.id not in self.closed:
+            self.closed.append(session.id)

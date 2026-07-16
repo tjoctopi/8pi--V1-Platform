@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from ..governance.audit import AuditLog
 from ..knowledge.store import KnowledgeStore
 from ..toolrunner.runner import ToolRunner
+from .oob import OobServer
 
 
 @dataclass
@@ -25,3 +26,7 @@ class VerifyContext:
     #: modules that use a reverse payload fall back to this when a finding has no
     #: explicit LHOST — so autonomous reverse-shell exploitation has a callback.
     listener_lhost: str | None = None
+    #: Out-of-band interaction server for proving *blind* vulnerabilities
+    #: (SSRF/XXE/blind-SQLi callbacks). Absent when no listener is stood up; the
+    #: OOB oracles then decline to confirm rather than guess (rule #1).
+    oob: OobServer | None = None

@@ -28,11 +28,13 @@ from .agents.base import Agent, AgentReport
 from .agents.context import AgentContext
 from .agents.loader import build_agent
 from .c2.backend import C2Backend
+from .c2.foothold import FootholdRunner
 from .c2.postex import PostExOperator
 from .c2.session import SessionManager
 from .config import Settings, get_settings
 from .correlate.feeds import CveFeed, LocalCveFeed
 from .correlate.matcher import ExploitabilityMatcher, MatchReport
+from .correlate.nvd import build_feed_from_files
 from .correlate.scoring import ExploitabilityScorer
 from .defense.blue_sentry import BlueSentry
 from .errors import AttackEngineError
@@ -51,11 +53,69 @@ from .schemas.scope import Scope
 from .toolrunner.registry import ToolRegistry, default_registry
 from .toolrunner.runner import ToolRunner
 from .toolrunner.sandbox import Sandbox, build_sandbox
+from .verify.calibrate import Calibrator
+from .verify.calibration import (
+    CalibrationMethod,
+    calibration_report,
+    fit_calibrator,
+    load_calibration_samples,
+)
 from .verify.context import VerifyContext
 from .verify.oracles import default_oracle_registry
 from .verify.verifier import Verifier, VerifyReport
 
 _log = get_logger("engine")
+
+
+def build_cve_feed(settings: Settings) -> CveFeed:
+    """Select the CVE feed from config: real files when set, else the seed.
+
+    Production sets ``cve_nvd_path`` + ``cve_kev_path`` (refreshed by a scheduled
+    job) and gets the real NVD/KEV feed, enriched with EPSS + public-exploit ids
+    when those paths are set too. With no files configured we fall back to the
+    bundled 3-record seed — fine for dev/pilot, but we log loudly so a real
+    deployment is never silently running on the toy feed.
+    """
+
+    if settings.cve_nvd_path and settings.cve_kev_path:
+        _log.info(
+            "loading CVE feed from files",
+            nvd=settings.cve_nvd_path,
+            kev=settings.cve_kev_path,
+            epss=settings.cve_epss_path,
+            exploit_ids=settings.cve_exploit_ids_path,
+        )
+        return build_feed_from_files(
+            settings.cve_nvd_path,
+            settings.cve_kev_path,
+            epss_path=settings.cve_epss_path,
+            exploit_ids_path=settings.cve_exploit_ids_path,
+        )
+    _log.warning("no CVE feed files configured; using bundled seed feed (dev/pilot only)")
+    return LocalCveFeed.from_json()
+
+
+def build_calibrator(settings: Settings) -> Calibrator | None:
+    """Fit the exploitability calibrator from config, or None if not configured.
+
+    With ``calibration_path`` set, exploit probabilities are mapped onto ground
+    truth (honest "0.9 ≈ 90%"); without it, the raw model score is used and every
+    consumer behaves exactly as before.
+    """
+
+    if not settings.calibration_path:
+        return None
+    method: CalibrationMethod = (
+        "platt" if settings.calibration_method == "platt" else "isotonic"
+    )
+    samples = load_calibration_samples(settings.calibration_path)
+    calibrator = fit_calibrator(samples, method)
+    _log.info(
+        "exploitability calibrator fitted",
+        method=method,
+        report=calibration_report(calibrator, samples),
+    )
+    return calibrator
 
 
 def load_scope(path: str | Path) -> Scope:
@@ -90,6 +150,9 @@ class Engagement:
     #: C2 session/listener registry (O3) + the engagement kill switch (O0).
     session_manager: SessionManager
     kill_switch: KillSwitch
+    #: Fitted probability calibrator (None ⇒ raw scores). Wired into the Verifier
+    #: so a promoted finding's exploit_prob is calibrated, not a raw sigmoid.
+    calibrator: Calibrator | None = None
 
     def run_agent(self, spec: AgentSpec, targets: list[str]) -> AgentReport:
         agent: Agent = build_agent(spec, self.context, self.registry)
@@ -104,7 +167,7 @@ class Engagement:
             store=self.store,
             audit=self.audit,
         )
-        return Verifier(default_oracle_registry(), ctx).run()
+        return Verifier(default_oracle_registry(), ctx, calibrator=self.calibrator).run()
 
     def correlate(self) -> MatchReport:
         """Map verified services to scored, prioritised CVE findings."""
@@ -171,6 +234,22 @@ class Engagement:
             gate=self.context.gate, kill_switch=self.kill_switch,
         )
 
+    def foothold(self, backend: C2Backend) -> FootholdRunner:
+        """Foothold runner (O2→O3) over this engagement's C2 backend.
+
+        Establishes and *proves* live sessions from a landed exploit — authorized
+        (engagement-boundary or gated), scope-bound, kill-switchable, audited. Its
+        ``teardown()`` closes both the session bookkeeping and the transport, so a
+        kill-switch trip releases live footholds, not just refuses new ones.
+        """
+
+        from .c2.foothold import FootholdRunner
+
+        return FootholdRunner(
+            self.session_manager, backend, self.scope, self.audit,
+            gate=self.context.gate, kill_switch=self.kill_switch,
+        )
+
     def orchestrator(self, *, blue_sentry: BlueSentry | None = None) -> Orchestrator:
         """Build an Orchestrator bound to this engagement (drives the full loop)."""
 
@@ -202,8 +281,9 @@ class Engine:
         self.gateway = gateway
         self.sandbox = sandbox
         self.registry = registry
-        self.feed = feed or LocalCveFeed.from_json()
-        self.scorer = scorer or ExploitabilityScorer()
+        self.feed = feed or build_cve_feed(settings)
+        self.calibrator = build_calibrator(settings)
+        self.scorer = scorer or ExploitabilityScorer(calibrator=self.calibrator)
         # Fail closed: with no responder wired, every gated action is denied.
         self.gate_responder = gate_responder or deny_all
 
@@ -325,4 +405,5 @@ class Engine:
             scorer=self.scorer,
             session_manager=session_manager,
             kill_switch=kill_switch,
+            calibrator=self.calibrator,
         )

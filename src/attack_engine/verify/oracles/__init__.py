@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from .access_control import AccessControlOracle
 from .base import Oracle, OracleRegistry, OracleResult
+from .command_injection import CommandInjectionOracle
+from .lfi_file_read import LfiFileReadOracle
 from .open_redirect import OpenRedirectOracle
 from .reflected_xss import ReflectedXssOracle
 from .sqli_boolean_blind import SqliBooleanBlindOracle
+from .ssrf_oob import SsrfOobOracle
+from .ssti import SstiOracle
 from .version_regrab import VersionRegrabOracle
 
 __all__ = [
@@ -16,6 +21,11 @@ __all__ = [
     "SqliBooleanBlindOracle",
     "ReflectedXssOracle",
     "OpenRedirectOracle",
+    "LfiFileReadOracle",
+    "SsrfOobOracle",
+    "SstiOracle",
+    "AccessControlOracle",
+    "CommandInjectionOracle",
     "default_oracle_registry",
 ]
 
@@ -33,4 +43,9 @@ def default_oracle_registry() -> OracleRegistry:
     reg.register(SqliBooleanBlindOracle())
     reg.register(ReflectedXssOracle())
     reg.register(OpenRedirectOracle())
+    reg.register(LfiFileReadOracle())
+    reg.register(SsrfOobOracle())
+    reg.register(SstiOracle())
+    reg.register(AccessControlOracle())
+    reg.register(CommandInjectionOracle())
     return reg

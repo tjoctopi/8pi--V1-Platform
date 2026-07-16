@@ -45,6 +45,9 @@ class CveRecord:
     kev: bool = False
     cwe: str | None = None
     has_public_exploit: bool = False
+    #: EPSS — FIRST.org's probability (0..1) the CVE is exploited in the wild in
+    #: the next 30 days. An exploit-maturity signal distinct from static CVSS.
+    epss: float = 0.0
     affected: tuple[AffectedProduct, ...] = field(default_factory=tuple)
 
     def affects(self, product: str, version: str | None) -> bool:
@@ -95,6 +98,7 @@ class LocalCveFeed:
             kev=bool(r.get("kev", False)),
             cwe=r.get("cwe"),
             has_public_exploit=bool(r.get("has_public_exploit", False)),
+            epss=float(r.get("epss", 0.0)),
             affected=tuple(affected),
         )
 

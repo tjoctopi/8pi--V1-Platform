@@ -6,6 +6,7 @@ from .dedup import DedupIndex, default_key
 from .graph import ENTRY_NODE, AttackGraph, NodeType
 from .graph_backend import GraphBackend, build_graph_backend
 from .store import KnowledgeStore
+from .worldmodel import WorldModel
 
 __all__ = [
     "ENTRY_NODE",
@@ -16,4 +17,5 @@ __all__ = [
     "default_key",
     "GraphBackend",
     "build_graph_backend",
+    "WorldModel",
 ]

@@ -19,12 +19,26 @@ authorized at the engagement boundary (or gated), kill-switchable, fully audited
 from __future__ import annotations
 
 from .backend import C2Backend, MockC2Backend
+from .foothold import Foothold, FootholdRunner
+from .msf import MsfFootholdLauncher, MsfRpcBackend, MsfRpcClient
 from .postex import PostExOperator, PostExReport, PostExResult
 from .session import Listener, Session, SessionKind, SessionManager, SessionStatus
+from .sliver import SliverC2Backend, SliverClient
+from .webshell import WebInjectionPoint, WebShellBackend, web_shell_backend
 
 __all__ = [
     "C2Backend",
     "MockC2Backend",
+    "Foothold",
+    "FootholdRunner",
+    "MsfRpcBackend",
+    "MsfRpcClient",
+    "MsfFootholdLauncher",
+    "SliverC2Backend",
+    "SliverClient",
+    "WebShellBackend",
+    "WebInjectionPoint",
+    "web_shell_backend",
     "Listener",
     "Session",
     "SessionKind",
