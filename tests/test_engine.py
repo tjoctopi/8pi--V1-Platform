@@ -160,6 +160,30 @@ def test_engagement_lateral_factory(engine: Engine, range_scope: Scope) -> None:
     assert engagement.session_manager.sessions(active_only=True)
 
 
+def test_adversary_campaign_from_engagement_wires_specialists(
+    engine: Engine, range_scope: Scope
+) -> None:
+    """The engine wires an autonomous campaign over the real recon/web/identity
+    specialists, seeding the initial targets as reachable frontier (Phase F)."""
+
+    from attack_engine.orchestrator.adversary import AdversaryCampaign
+    from attack_engine.orchestrator.objective import DomainAdminObjective
+
+    engagement = engine.engagement(range_scope)
+    campaign = AdversaryCampaign.from_engagement(
+        engagement, targets=["10.5.0.10", "10.5.0.20"], max_rounds=1
+    )
+    # three specialists chained toward the external→DA goal
+    assert [p.name for p in campaign.phases] == ["recon", "web", "identity"]
+    assert isinstance(campaign.goal, DomainAdminObjective)
+    # targets seeded as reachable assets the planners can act on
+    assert {a.address for a in campaign.world_model.reachable_assets()} == {
+        "10.5.0.10", "10.5.0.20"
+    }
+    # out-of-scope targets are skipped, not fatal
+    AdversaryCampaign.from_engagement(engagement, targets=["8.8.8.8"], max_rounds=1)
+
+
 def test_load_scope_from_example_file() -> None:
     example = Path(__file__).resolve().parents[1] / "examples/engagement-range.scope.yaml"
     scope = load_scope(example)
