@@ -275,6 +275,31 @@ _Last updated: 2026-07-16_
   across collectors/roast-parsing is worth a future slice). **Carry-forward:** fully live-LLM-driven full-chain
   run (reuses A/D/E plumbing) + Windows member host for on-wire lateral + campaign SSE narrative.
 
+## 2026-07-17 — Autonomous reliability fixed: full A→D pipeline lands a CONFIRMED foothold unattended
+- **Milestone:** the fully-autonomous stitch-through finally works. Live, no scripts, 1-click test auth,
+  real Claude + real Docker sandbox vs Metasploitable: recon(5-6 svc) → web crawl of Mutillidae →
+  auto-graduated 12 injectable candidates → oracles **VERIFIED the LFI on `page`** (lfi_file_read_oracle_v1),
+  **REJECTED 11 false candidates (zero FPs)** → correlate → **CONFIRMED lfi prob=0.98**. Script:
+  scratchpad/e2e_proof.py. (~220s/run; SQLi confirm has run-to-run variance, LFI confirms reliably.)
+- **Five reliability bugs fixed, all root-caused from live traces** (commits eb3bdad + 0594e79):
+  1. Actor crashed on bad LLM args (`ValueError` from build_argv) → degrade.
+  2. Actor crashed on hallucinated tool name (`ToolNotRegisteredError`) → degrade.
+  3. Actor crashed on rejected payload — `ToolProfile(args=...)` was built OUTSIDE the try, so the
+     shell-metachar guard's pydantic `ValidationError` (NOT a ValueError in v2) killed the loop. Moved inside
+     the try + catch it. `tool_actor.py`.
+  4. **Scope refused URL / host:port targets** (the big one): the web planner passes `http://h/path` / `h:80`;
+     the scope check only accepted bare IPs, so the CRAWLER kept failing "out-of-scope" on the AUTHORIZED
+     target → loop starved, nothing to confirm. `ScopeEnforcer` now normalizes URL/host:port → host for the
+     allowlist check (`_bare_target`, urlparse defeats the `http://allowed@evil` trick — never widens scope).
+     `toolrunner/scope.py`.
+  5. **Graduation never wired into the web loop** — beliefs accumulated but never became PROPOSED findings, so
+     verify() had nothing to confirm. `build_web_loop` now auto-graduates oracle-ready beliefs each step
+     (`_ObserveAndGraduate` composite observer, `graduate=True` default). `web_specialist.py`.
+- **Note the state semantics:** VERIFIED = oracle-proven impact (the core promise); CONFIRMED = verified +
+  correlated (reachability + scoring). Both are real; a proof script must check VERIFIED (or run correlate for
+  CONFIRMED). FindingState: PROPOSED → VERIFIED → CONFIRMED (or → REJECTED).
+- **709 unit tests green, ruff+mypy clean.** All on `feat/phase-f-adversary` (PR #15), pushed.
+
 ## 2026-07-17 — One-click TEST authorization (frictionless deploy/test) + governance backlog
 - **Why:** user deploys the platform then tests the full offensive pipeline via the frontend; wants the
   offensive chain to run on **user/test authorization alone** with zero deployment friction (they know the real
