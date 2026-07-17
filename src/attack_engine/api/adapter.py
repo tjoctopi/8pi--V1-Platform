@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..agents.loader import load_spec
+from ..agents.loader import build_agent, load_spec
 from ..config import Settings
 from ..correlate.matcher import MatchReport
 from ..engine import Engagement, Engine
@@ -46,6 +46,7 @@ from ..schemas.events import Event
 from ..schemas.scope import RateLimit, RulesOfEngagement, Scope
 from ..verify.verifier import VerifyReport
 from . import views
+from .approvals import ApprovalBroker
 from .serialize import asset_to_json, audit_entry_to_json, finding_to_json
 
 _SPECS_DIR = Path(__file__).resolve().parent.parent / "agents" / "specs"
@@ -143,14 +144,19 @@ def scope_from_roe(
     expiry; ``signature``/``authorized_by`` bind the human authorization.
     """
 
-    cidrs: list[str] = []
-    hosts: list[str] = []
-    for entry in roe.get("scope_allowlist") or []:
-        classified = _classify_target(entry)
-        if classified is None:
-            continue
-        kind, value = classified
-        (cidrs if kind == "cidr" else hosts).append(value)
+    def _split_targets(entries: list[str]) -> tuple[list[str], list[str]]:
+        cidrs: list[str] = []
+        hosts: list[str] = []
+        for entry in entries or []:
+            classified = _classify_target(entry)
+            if classified is None:
+                continue
+            kind, value = classified
+            (cidrs if kind == "cidr" else hosts).append(value)
+        return cidrs, hosts
+
+    cidrs, hosts = _split_targets(roe.get("scope_allowlist") or [])
+    denied_cidrs, denied_hosts = _split_targets(roe.get("scope_denylist") or [])
 
     intensity = str(roe.get("max_intensity") or "recon")
     read_only, tier = _INTENSITY.get(intensity, (True, 0))
@@ -159,19 +165,24 @@ def scope_from_roe(
     if intensity == "exploit":
         techniques |= {"exploit_confirm", "exploitation"}
 
-    expires_at: datetime | None = None
-    window_end = roe.get("window_end")
-    if window_end:
+    def _parse_dt(value: Any) -> datetime | None:
+        if not value:
+            return None
         try:
-            expires_at = datetime.fromisoformat(str(window_end).replace("Z", "+00:00"))
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError:
-            expires_at = None
+            return None
+
+    expires_at = _parse_dt(roe.get("window_end"))
+    starts_at = _parse_dt(roe.get("window_start"))
 
     rules = RulesOfEngagement(
         read_only=read_only,
         autonomy_tier=tier,
         authorized_techniques=frozenset(techniques),
         forbidden_tools=frozenset(roe.get("forbidden_tools") or []),
+        # The console's "Allowed Tools" picker — empty means no restriction.
+        allowed_tools=frozenset(roe.get("allowed_tools") or []),
         # Headroom for the verification oracles' rapid differential probing
         # (boolean-blind SQLi fires several http_probes back-to-back).
         default_rate_limit=RateLimit(requests_per_sec=50, burst=20),
@@ -180,9 +191,12 @@ def scope_from_roe(
         engagement_id=engagement_id_for(external_id),
         allowed_cidrs=tuple(dict.fromkeys(cidrs)),
         allowed_hosts=tuple(dict.fromkeys(hosts)),
+        denied_cidrs=tuple(dict.fromkeys(denied_cidrs)),
+        denied_hosts=tuple(dict.fromkeys(denied_hosts)),
         roe=rules,
         authorized_by=authorized_by,
         signature=signature,
+        starts_at=starts_at,
         expires_at=expires_at,
     )
 
@@ -216,6 +230,12 @@ class EngineAdapter:
         self._job_lock = threading.Lock()
         #: per-engagement event queues fed from the engine event bus → SSE.
         self._events: dict[str, queue.Queue[dict[str, Any]]] = {}
+        #: async human-approval broker — parks gated actions for the console.
+        self._approvals = ApprovalBroker()
+        #: latest re-test result per finding (engine eid → finding id → row).
+        self._retests: dict[str, dict[str, dict[str, Any]]] = {}
+        #: saved Red Scope copilot presets (session-scoped).
+        self._red_scope_agents: list[dict[str, Any]] = []
         bus = self._engine.event_bus
         if hasattr(bus, "subscribe"):
             bus.subscribe(self._route_event)
@@ -239,10 +259,18 @@ class EngineAdapter:
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def open(self, scope: Scope, *, require_signed: bool | None = None) -> Engagement:
-        """Bind a signed scope → live engagement (idempotent per id)."""
+        """Bind a signed scope → live engagement (idempotent per id).
 
+        For a real signed scope, gated (high-impact) actions are routed to the
+        :class:`ApprovalBroker` so a human approves/denies them from the console.
+        A one-click *test* scope keeps the engine's frictionless auto-approve
+        (the operator already opted in via ``AE_ALLOW_TEST_AUTH``).
+        """
+
+        responder = None if scope.is_test_authorization else self._approvals.responder
         eng = self._manager.open(
-            scope, self._service, require_signed=require_signed
+            scope, self._service,
+            gate_responder=responder, require_signed=require_signed,
         )
         self._scopes[scope.engagement_id] = scope
         return eng
@@ -448,8 +476,38 @@ class EngineAdapter:
     def assets(self, external_id: str) -> list[dict[str, Any]]:
         return [asset_to_json(a) for a in self.engagement(external_id).store.assets()]
 
+    @staticmethod
+    def _console_status(
+        base: str, has_remediation: bool, retest: dict[str, Any] | None
+    ) -> str:
+        """Fold the remediation lifecycle into the console's finding status.
+
+        A bare finding is ``open`` (or ``false-positive`` if rejected). Once a
+        remediation is proposed it reads ``remediating``; a re-test that clears it
+        is ``closed``; a re-test that still fires is ``retest`` (fix didn't hold).
+        """
+
+        if retest is not None:
+            return "closed" if retest.get("fixed") else "retest"
+        if has_remediation:
+            return "remediating"
+        return base
+
     def findings(self, external_id: str) -> list[dict[str, Any]]:
-        return [finding_to_json(f) for f in self.engagement(external_id).store.findings()]
+        eng = self.engagement(external_id)
+        retests = self._retests.get(engagement_id_for(external_id), {})
+        rows: list[dict[str, Any]] = []
+        for f in eng.store.findings():
+            row = finding_to_json(f)
+            rems = eng.store.remediations(f.id)
+            retest = retests.get(f.id)
+            row["status"] = self._console_status(row["status"], bool(rems), retest)
+            if rems and not row.get("remediation"):
+                row["remediation"] = rems[0].content
+            if retest is not None:
+                row["retest"] = retest
+            rows.append(row)
+        return rows
 
     def audit_events(
         self,
@@ -490,6 +548,53 @@ class EngineAdapter:
                 "count": len(entries),
             }
 
+    def invocation_raw(self, invocation_id: str) -> dict[str, Any] | None:
+        """Raw sandbox output for a tool invocation (by its audit entry hash)."""
+
+        backend = self._engine.audit.backend
+        raw = backend.get_raw(invocation_id) if hasattr(backend, "get_raw") else None
+        entry = next(
+            (e for e in self._engine.audit.entries() if e.entry_hash == invocation_id),
+            None,
+        )
+        if raw is None and entry is None:
+            return None
+        return {
+            "id": invocation_id,
+            "raw": raw.decode("utf-8", "replace") if raw else "",
+            "action": entry.action if entry else None,
+            "target": entry.target if entry else None,
+            "payload": entry.payload if entry else {},
+        }
+
+    def record_governance(
+        self,
+        external_id: str,
+        *,
+        actor: str,
+        action: str,
+        target: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a lifecycle / governance action to the engine's hash chain.
+
+        The console drives the whole engagement lifecycle (sign RoE, activate,
+        pause, halt, resume, archive, approvals) through the HTTP shell; those
+        actions must land in the *same* tamper-evident chain as the engine's own
+        tool/model events, attributed to the real operator (not the internal
+        service principal). The chain is engine-global and filtered by
+        ``engagement_id``, so this works even before an engagement is opened
+        (e.g. signing a draft RoE).
+        """
+
+        self._engine.audit.append(
+            engagement_id=engagement_id_for(external_id),
+            actor=actor,
+            action=action,
+            target=target,
+            payload=payload or {},
+        )
+
     def invocations(self, external_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
         """Tool invocations for the Console, derived from the tool audit trail."""
 
@@ -515,6 +620,163 @@ class EngineAdapter:
             })
         return list(reversed(out))[: max(0, limit)]
 
+    # ── CVE feed (cache + refresh) ─────────────────────────────────────────
+    @staticmethod
+    def _cve_json(rec: Any) -> dict[str, Any]:
+        products = [a.product for a in rec.affected]
+        return {
+            "id": rec.id,
+            "cve_id": rec.id,
+            "product": products[0] if products else "",
+            "products": products,
+            "versions": [],
+            "cvss": rec.cvss,
+            "kev": rec.kev,
+            "epss": rec.epss,
+            "exploit_known": rec.has_public_exploit,
+            "cwe": rec.cwe,
+            "summary": rec.description,
+        }
+
+    def cve_cache(self) -> list[dict[str, Any]]:
+        """The CVE records currently loaded in the engine feed."""
+
+        records = getattr(self._engine.feed, "records", None)
+        if not records:
+            return []
+        return [self._cve_json(r) for r in records]
+
+    def refresh_cve(self, external_id: str, *, actor: str) -> dict[str, Any]:
+        """Rebuild the CVE feed from config and re-correlate the engagement.
+
+        Re-reads the configured NVD/KEV/EPSS files (or the seed feed if none are
+        configured), swaps it into the engine and the open engagement, and re-runs
+        exploitability correlation so new CVE matches surface as findings.
+        """
+
+        from ..engine import build_cve_feed
+
+        feed = build_cve_feed(self._engine.settings)
+        self._engine.feed = feed
+        records = getattr(feed, "records", [])
+        source = "files" if self._engine.settings.cve_nvd_path else "seed"
+        findings_after = 0
+        if self.is_open(external_id):
+            eng = self.engagement(external_id)
+            eng.feed = feed
+            with contextlib.suppress(AttackEngineError):
+                eng.correlate()
+            findings_after = len(eng.store.findings())
+        self.record_governance(
+            external_id, actor=actor, action="cve.refreshed",
+            payload={"records": len(records), "source": source},
+        )
+        return {"records": len(records), "source": source, "findings": findings_after}
+
+    # ── model gateway: inference + adversary copilot (BYOM, rule #4) ────────
+    def _chat_messages(self, messages: list[dict[str, Any]]) -> list[Any]:
+        from ..gateway.types import ChatMessage
+
+        makers = {
+            "system": ChatMessage.system,
+            "assistant": ChatMessage.assistant,
+            "user": ChatMessage.user,
+        }
+        out = []
+        for m in messages:
+            content = m.get("content") or m.get("text") or ""
+            if not content:
+                continue
+            out.append(makers.get(m.get("role", "user"), ChatMessage.user)(content))
+        return out
+
+    def model_infer(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        sensitivity: str = "internal",
+        route: str | None = None,
+        actor: str = "operator",
+        engagement_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Route a completion through the BYOM gateway (playground).
+
+        Sensitivity ``sensitive``/``airgapped`` is pinned to the LOCAL tier
+        (SEC-05 — sensitive data never leaves on a hosted model); otherwise an
+        explicit route override wins, else the frontier tier. Every call is
+        audited by the gateway itself.
+        """
+
+        from ..schemas.agentspec import ModelTier
+
+        if sensitivity in ("sensitive", "airgapped"):
+            tier, forced_local = ModelTier.LOCAL, True
+        elif route == "local":
+            tier, forced_local = ModelTier.LOCAL, False
+        elif route == "frontier":
+            tier, forced_local = ModelTier.FRONTIER, False
+        else:
+            tier, forced_local = ModelTier.FRONTIER, False
+        eid = engagement_id_for(engagement_id) if engagement_id else None
+        resp = self._engine.gateway.complete(
+            self._chat_messages(messages), tier=tier, engagement_id=eid, actor=actor
+        )
+        return {
+            "route": resp.tier or resp.model,
+            "model": resp.model,
+            "text": resp.text,
+            "redaction_applied": forced_local,
+            "usage": {
+                "token_in": resp.usage.prompt_tokens,
+                "token_out": resp.usage.completion_tokens,
+                "latency_ms": 0,
+                "cost": 0,
+            },
+        }
+
+    _RED_SCOPE_SYSTEM = (
+        "You are the 8π Red Scope copilot — an adversary-emulation advisor for an "
+        "authorized red-team operator. You operate strictly inside a signed scope and "
+        "the platform's propose-vs-confirm rules: you propose attack reasoning, "
+        "prioritization, and next steps; deterministic engine oracles confirm. Be "
+        "concise, technical, and actionable. Never invent findings as fact."
+    )
+
+    def red_scope_chat(
+        self,
+        *,
+        message: str,
+        history: list[dict[str, Any]] | None = None,
+        actor: str = "operator",
+    ) -> dict[str, Any]:
+        """The Red Scope adversary copilot — a gateway-backed chat (BYOM)."""
+
+        from ..gateway.types import ChatMessage
+
+        convo = [ChatMessage.system(self._RED_SCOPE_SYSTEM)]
+        convo.extend(self._chat_messages(history or []))
+        convo.append(ChatMessage.user(message))
+        from ..schemas.agentspec import ModelTier
+
+        resp = self._engine.gateway.complete(
+            convo, tier=ModelTier.FRONTIER, actor=actor
+        )
+        return {"reply": resp.text, "model": resp.model}
+
+    def save_red_scope_agent(
+        self, draft: dict[str, Any], *, actor: str = "operator"
+    ) -> dict[str, Any]:
+        """Persist a Red Scope copilot preset for this session (in-memory)."""
+
+        agent = {
+            **draft,
+            "id": draft.get("id") or f"rs-{utcnow().strftime('%Y%m%d%H%M%S')}",
+            "created_by": actor,
+            "created_at": utcnow().isoformat(),
+        }
+        self._red_scope_agents.append(agent)
+        return agent
+
     def model_calls(self, external_id: str | None = None) -> list[dict[str, Any]]:
         """Model gateway calls, derived from the model audit trail."""
 
@@ -535,6 +797,116 @@ class EngineAdapter:
 
     def agent_runs(self, external_id: str) -> list[dict[str, Any]]:
         return list(reversed(self._runs.get(engagement_id_for(external_id), [])))
+
+    # ── human approvals (gated actions over HTTP) ──────────────────────────
+    def approvals(
+        self, external_id: str, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._approvals.approvals(engagement_id_for(external_id), status)
+
+    def pending_approvals(self, external_id: str) -> int:
+        return self._approvals.pending_count(engagement_id_for(external_id))
+
+    def resolve_approval(
+        self, approval_id: str, *, approved: bool, approver: str, reason: str = ""
+    ) -> bool:
+        """Approve/deny a parked gate; unblocks the waiting engine worker thread."""
+
+        return self._approvals.resolve(
+            approval_id, approved=approved, approver=approver, reason=reason
+        )
+
+    # ── remediation lifecycle (propose fix → re-test) ──────────────────────
+    @staticmethod
+    def _remediation_json(rem: Any) -> dict[str, Any]:
+        return {
+            "id": rem.id, "finding_id": rem.finding_id, "kind": rem.kind.value,
+            "title": rem.title, "content": rem.content, "status": rem.status.value,
+            "proposed_by": rem.proposed_by, "created_at": rem.created_at,
+        }
+
+    def _find_engagement_of(self, finding_id: str) -> tuple[str, Any] | None:
+        """Locate the open engagement holding ``finding_id`` (engine id, handle)."""
+
+        for eid in self._manager.list_open(self._service):
+            eng = self._manager.get(eid, self._service)
+            if eng.store.get_finding(finding_id) is not None:
+                return eid, eng
+        return None
+
+    def remediate_finding(self, finding_id: str, *, actor: str) -> dict[str, Any]:
+        """Propose a remediation for a finding (propose-only; never auto-applies).
+
+        Reuses the real :class:`Converter` archetype to generate the control (patch
+        / config / ticket) deterministically. Applying a change on the customer's
+        estate stays a separate, human-gated action — this only proposes.
+        """
+
+        from ..agents.archetypes.converter import Converter
+
+        located = self._find_engagement_of(finding_id)
+        if located is None:
+            raise AttackEngineError(f"finding {finding_id!r} not found in any open engagement")
+        eid, eng = located
+        finding = eng.store.get_finding(finding_id)
+        existing = eng.store.remediations(finding_id)
+        if existing:
+            rem = existing[0]
+        else:
+            spec = load_spec(_SPECS_DIR / "converter.yaml").model_copy(
+                update={"scope_ref": eid}
+            )
+            agent = build_agent(spec, eng.context, eng.registry)
+            assert isinstance(agent, Converter)
+            rem = agent._propose(finding)
+            eng.store.add_remediation(rem, emitted_by="api")
+        self.record_governance(
+            eid, actor=actor, action="finding.remediation_proposed",
+            target=finding.asset,
+            payload={"finding_id": finding_id, "remediation_id": rem.id,
+                     "kind": rem.kind.value},
+        )
+        return self._remediation_json(rem)
+
+    def retest_finding(self, finding_id: str, *, actor: str) -> dict[str, Any]:
+        """Re-run the exact confirming check and report whether it still fires.
+
+        Uses the engine's :class:`RetestRunner` (scope-enforced, audited). A fix
+        that holds marks any proposed remediation ``verified_fixed`` and the
+        console finding ``closed``; a check that still fires is escalated.
+        """
+
+        from ..orchestrator.retest import RetestRunner
+        from ..schemas.remediation import RemediationStatus
+        from ..verify.context import VerifyContext
+
+        located = self._find_engagement_of(finding_id)
+        if located is None:
+            raise AttackEngineError(f"finding {finding_id!r} not found in any open engagement")
+        eid, eng = located
+        finding = eng.store.get_finding(finding_id)
+        ctx = VerifyContext(
+            engagement_id=eid, tool_runner=eng.tool_runner,
+            store=eng.store, audit=eng.audit,
+        )
+        result = RetestRunner(ctx, eng.feed).retest(finding)
+        rems = eng.store.remediations(finding_id)
+        if rems:
+            new_status = (
+                RemediationStatus.VERIFIED_FIXED if result.fixed
+                else RemediationStatus.PERSISTED
+            )
+            eng.store.update_remediation(rems[0].model_copy(update={"status": new_status}))
+        row = {"finding_id": finding_id, "fixed": result.fixed,
+               "closed": result.fixed, "detail": result.detail,
+               "ts": utcnow().isoformat()}
+        self._retests.setdefault(eid, {})[finding_id] = row
+        self.record_governance(
+            eid, actor=actor, action="finding.retest", target=finding.asset,
+            payload={"finding_id": finding_id, "fixed": result.fixed,
+                     "detail": result.detail},
+        )
+        return row
 
     def asset_detail(self, external_id: str, asset_id: str) -> dict[str, Any] | None:
         """One asset + its findings + tool invocations that touched it."""
@@ -567,10 +939,11 @@ class EngineAdapter:
 
         open_ids = self._manager.list_open(self._service)
         by_severity = {"crit": 0, "high": 0, "med": 0, "low": 0, "info": 0}
-        assets = findings_open = 0
+        assets = findings_open = pending_approvals = 0
         for eid in open_ids:
             eng = self._manager.get(eid, self._service)
             assets += len(eng.store.assets())
+            pending_approvals += self._approvals.pending_count(eid)
             for f in eng.store.findings():
                 row = finding_to_json(f)
                 if row["status"] not in ("closed", "false-positive"):
@@ -583,7 +956,7 @@ class EngineAdapter:
             "findings_open": findings_open,
             "findings_by_severity": by_severity,
             "tool_invocations": len(self._engine.audit.entries()),
-            "pending_approvals": 0,
+            "pending_approvals": pending_approvals,
             "model_calls": 0,
             "model_spend": 0,
             "agents": 0,

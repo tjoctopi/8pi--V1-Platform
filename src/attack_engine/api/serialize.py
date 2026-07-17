@@ -165,20 +165,40 @@ def asset_to_json(a: Asset) -> dict[str, Any]:
 
 # ── audit ─────────────────────────────────────────────────────────────────────
 
+def _actor_role(action: str, actor: str) -> str:
+    """Coarse actor lane the console colours + filters by.
+
+    The engine stores a single ``actor`` identity string (an operator email, an
+    approver id, the internal service principal, or an agent name). The console
+    buckets these into four lanes; we derive the lane from the action namespace,
+    keeping the identity separately as ``actor_id``.
+    """
+
+    if action.startswith(("tool.", "agent.", "campaign.", "model.")):
+        return "agent"
+    if action.startswith("approval.") or "approver" in actor.lower():
+        return "approver"
+    if action.startswith(("engagement.", "roe.", "finding.")):
+        return "operator"
+    return "system"
+
+
 def audit_entry_to_json(e: AuditEntry) -> dict[str, Any]:
     """Engine hash-chained :class:`AuditEntry` → console audit event.
 
     The console's tamper-evident audit view expects ``event_type``/``hash``;
     the engine names these ``action``/``entry_hash``. The chain fields
     (``seq``/``prev_hash``/``hash``) map one-to-one so the console's
-    verify-chain view reflects the *real* chain.
+    verify-chain view reflects the *real* chain. ``actor`` is the coarse lane
+    (operator/agent/approver/system) the UI colours by; ``actor_id`` is the
+    real identity string.
     """
 
     return {
         "id": e.entry_hash,
         "seq": e.seq,
         "ts": e.ts,
-        "actor": e.actor,
+        "actor": _actor_role(e.action, e.actor),
         "actor_id": e.actor,
         "engagement_id": e.engagement_id,
         "event_type": e.action,
