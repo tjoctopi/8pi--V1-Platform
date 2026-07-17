@@ -11,6 +11,8 @@ whether the tool is nmap or bloodhound.
 
 from __future__ import annotations
 
+from pydantic import ValidationError as PydanticValidationError
+
 from ..errors import (
     RateLimitExceededError,
     RoEViolationError,
@@ -36,8 +38,11 @@ class ToolRunnerActor:
     def act(self, action: ProposedAction) -> ActionOutcome:
         if not action.target:
             return ActionOutcome(ok=False, summary=f"{action.tool}: no target given")
-        profile = ToolProfile(args=dict(action.params))
         try:
+            # Building the profile validates the args (e.g. the shell-metacharacter
+            # guard) and can reject an LLM-proposed action — that must degrade, not
+            # crash, so it lives inside the try alongside the tool run.
+            profile = ToolProfile(args=dict(action.params))
             result = self._runner.run(action.tool, action.target, profile)
         except ScopeViolationError as exc:
             _log.warning("actor: out of scope", tool=action.tool, target=action.target)
@@ -47,14 +52,15 @@ class ToolRunnerActor:
         except (ToolExecutionError, SandboxError) as exc:
             _log.warning("actor: tool degraded", tool=action.tool, error=str(exc))
             return ActionOutcome(ok=False, summary=f"degraded: {exc}")
-        except (ToolNotRegisteredError, ValueError) as exc:
-            # An invalid action the planner proposed — an unknown tool name, or a
-            # malformed call missing a required arg. It must not crash the loop; it
-            # becomes an unproductive step the Reflector adapts from (same contract
-            # as any other degraded action). The kill-switch's StopConditionReached
-            # is deliberately NOT caught here — it must propagate and halt the run.
-            _log.warning("actor: invalid action", tool=action.tool, error=str(exc))
-            return ActionOutcome(ok=False, summary=f"invalid action: {exc}")
+        except (ToolNotRegisteredError, ValueError, PydanticValidationError) as exc:
+            # An invalid action the planner proposed — an unknown tool name, a
+            # malformed call missing a required arg, or args the security validator
+            # rejects (e.g. a raw payload with shell metacharacters). It must not
+            # crash the loop; it becomes an unproductive step the Reflector adapts
+            # from. The kill-switch's StopConditionReached is deliberately NOT caught
+            # here — it must propagate and halt the run.
+            _log.warning("actor: invalid action", tool=action.tool, error=str(exc)[:200])
+            return ActionOutcome(ok=False, summary=f"invalid action: {str(exc)[:160]}")
 
         summary = (
             f"{action.tool} on {action.target}: exit={result.exit_code} "

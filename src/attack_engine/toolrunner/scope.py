@@ -15,9 +15,30 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Callable
+from urllib.parse import urlparse
 
 from ..errors import ScopeViolationError
 from ..schemas.scope import Scope
+
+
+def _bare_target(target: str) -> str:
+    """Reduce a URL or ``host:port`` to the bare host/IP we actually contact.
+
+    Tools accept a full URL target (their ``_url`` helper passes it through), but
+    the scope allowlist is about *which host* we may reach — so ``http://h/x`` and
+    ``h:8080`` must be checked as ``h``. ``urlparse().hostname`` also defuses the
+    ``http://allowed@evil`` userinfo trick (it returns the real host, ``evil``),
+    so normalization never widens scope. CIDRs and bare IPv6 are left untouched.
+    """
+
+    if "://" in target:
+        return urlparse(target).hostname or target
+    # host:port (a single colon, not a CIDR, not bare IPv6) → drop the port.
+    if target.count(":") == 1 and "/" not in target:
+        host, _, port = target.partition(":")
+        if port.isdigit():
+            return host
+    return target
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -158,6 +179,12 @@ class ScopeEnforcer:
         """Return whether ``target`` (IP, CIDR range, or hostname) is in scope."""
 
         target = target.strip()
+        if not target:
+            return False
+        # Normalize a URL / host:port to the bare host/IP we actually contact, so
+        # a planner that passes "http://h/path" isn't spuriously refused (the tool
+        # wrappers accept the full URL; the allowlist only cares about the host).
+        target = _bare_target(target)
         if not target:
             return False
         # A CIDR sweep (e.g. "10.5.0.0/24") — in scope iff fully contained in an

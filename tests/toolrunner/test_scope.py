@@ -32,6 +32,29 @@ class TestInScope:
         assert enf.allows("juice.local.")  # trailing dot tolerated
 
 
+class TestUrlAndPortNormalization:
+    """A URL or host:port target is checked by its host (tools accept the full URL)."""
+
+    def test_url_target_allowed_by_host(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("http://10.0.4.12/mutillidae/index.php?page=x")
+        assert enf.allows("https://juice.local/rest/products")
+
+    def test_host_with_port_allowed_by_host(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.4.12:8080")
+        assert enf.allows("juice.local:3000")
+
+    def test_url_out_of_scope_still_refused(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert not enf.allows("http://8.8.8.8/x")
+
+    def test_userinfo_trick_uses_real_host_not_widened(self, scope: Scope) -> None:
+        # http://<allowed>@<evil> must be judged by the REAL host (evil), refused.
+        enf = ScopeEnforcer(scope)
+        assert not enf.allows("http://10.0.4.12@evil.example.com/")
+
+
 class TestOutOfScope:
     def test_ip_outside_all_cidrs(self, scope: Scope) -> None:
         enf = ScopeEnforcer(scope)

@@ -239,16 +239,17 @@ def test_web_loop_crawls_and_graduates_end_to_end(ctx: AgentContext, fake_sandbo
     loop = build_web_loop(ctx)
     result = loop.run(wm, "find and prove a web vulnerability")
 
-    # The katana output flowed through the real Tool Runner and became beliefs.
+    # The katana output flowed through the real Tool Runner, became beliefs, and
+    # the oracle-ready ones AUTO-GRADUATED into PROPOSED findings in the one loop
+    # (build_web_loop now graduates each step — the autonomous recon→proof seam).
     assert result.iterations >= 1
-    kinds = {h.kind for h in wm.open_hypotheses()}
-    assert "lfi" in kinds  # the 'file' param
-    assert "sqli" in kinds  # every param is a SQLi candidate
+    from attack_engine.schemas.findings import FindingState
 
-    # And those beliefs graduate into oracle-ready proposed findings.
-    graduated = WebGraduator(ctx.store).graduate(wm)
-    types = {f.type for f in graduated}
-    assert "sqli-boolean-blind" in types
-    assert "lfi" in types
-    for f in graduated:
+    proposed = {f.type for f in ctx.store.findings(FindingState.PROPOSED)}
+    assert "lfi" in proposed  # the 'file' param
+    assert "sqli-boolean-blind" in proposed  # every param is a SQLi candidate
+    # Graduated beliefs are linked and no longer dangle as open leads.
+    assert "lfi" not in {h.kind for h in wm.open_hypotheses()}
+    # Every graduated finding is oracle-ready (a registered oracle can confirm it).
+    for f in ctx.store.findings(FindingState.PROPOSED):
         assert default_oracle_registry().for_finding(f) is not None
