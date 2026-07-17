@@ -20,6 +20,23 @@ repo_branch: dev
 ae_pg_db: attack_engine
 ae_pg_user: ae
 
+# ── Pilot config (offensive pipeline on TEST authorization) ──────────────────
+# Audit backend: sqlite for the pilot (self-contained on a single node). The
+# postgres DSN is still rendered and the DB stack stays up, so flipping
+# ae_audit_backend back to "postgres" needs no other change. SQLite + shell DBs
+# live on the persistent docker volume mounted at /app/data (survives recreate).
+ae_audit_backend: sqlite
+ae_audit_sqlite_path: /app/data/audit.db
+ae_api_db: /app/data/api_shell.db
+# SECURITY-SENSITIVE: when true, the engine runs the offensive pipeline on test
+# authorization (bypasses signed-scope). Intended for the pilot ONLY. Set to
+# false for real production (with signed-scope authorization + managed data).
+ae_allow_test_auth: true
+# CORS allow-list. Access is tailnet-only and the console is same-origin (nginx
+# proxies /api), so this is belt-and-suspenders for the tailnet hosts. If the
+# console is ever exposed on a public domain, this MUST match that origin exactly.
+ae_api_origins: "http://100.116.1.115,http://8pi-engine-dev"
+
 # ── Model gateway (LiteLLM/BYOM). Bedrock is keyless via the instance role,
 #    but note: the current engine gateway only builds a real provider when a
 #    Fireworks/Anthropic key is set — otherwise it uses MockProvider. ──────────
