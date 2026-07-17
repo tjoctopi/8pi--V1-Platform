@@ -92,6 +92,12 @@ class RulesOfEngagement(StrictModel):
     read_only: bool = True
     #: Tool names explicitly forbidden for this engagement (denylist wins).
     forbidden_tools: frozenset[str] = Field(default_factory=frozenset)
+    #: Tool allowlist. **Empty ⇒ no restriction** (any non-forbidden tool may
+    #: run — preserves the historical default). When non-empty it is an explicit
+    #: allowlist: only these tools may run, and the ``forbidden_tools`` denylist
+    #: still wins over it. This is what the console's RoE "Allowed Tools" picker
+    #: binds to, enforced at the Tool Runner boundary (rule #2).
+    allowed_tools: frozenset[str] = Field(default_factory=frozenset)
     #: Actions that always require a human gate before executing.
     gated_actions: frozenset[str] = Field(
         default_factory=lambda: frozenset({"exploit_confirm", "apply_fix", "containment"})
@@ -142,14 +148,23 @@ class Scope(StrictModel):
     engagement_id: str = Field(pattern=r"^eng(agement)?-[A-Za-z0-9_-]+$")
     allowed_cidrs: tuple[str, ...] = Field(default_factory=tuple)
     allowed_hosts: tuple[str, ...] = Field(default_factory=tuple)
+    #: Explicitly excluded targets (CIDRs / hostnames). The denylist **wins** over
+    #: the allowlist: a target inside an allowed range but also matching a denied
+    #: entry is refused. This is the console RoE "Scope Denylist" — e.g. carve a
+    #: fragile prod host out of an authorized subnet.
+    denied_cidrs: tuple[str, ...] = Field(default_factory=tuple)
+    denied_hosts: tuple[str, ...] = Field(default_factory=tuple)
     roe: RulesOfEngagement = Field(default_factory=RulesOfEngagement)
 
     # Authorisation binding.
     authorized_by: str | None = None
     signature: str | None = None
+    #: Start of the authorized window (RoE "Window Start"). Before this instant
+    #: the scope is not yet active and every tool call is refused (fail-safe).
+    starts_at: datetime | None = None
     expires_at: datetime | None = None
 
-    @field_validator("allowed_cidrs")
+    @field_validator("allowed_cidrs", "denied_cidrs")
     @classmethod
     def _validate_cidrs(cls, cidrs: tuple[str, ...]) -> tuple[str, ...]:
         normalised: list[str] = []
@@ -161,7 +176,7 @@ class Scope(StrictModel):
             normalised.append(str(net))
         return tuple(normalised)
 
-    @field_validator("allowed_hosts")
+    @field_validator("allowed_hosts", "denied_hosts")
     @classmethod
     def _validate_hosts(cls, hosts: tuple[str, ...]) -> tuple[str, ...]:
         for h in hosts:
@@ -242,3 +257,10 @@ class Scope(StrictModel):
         if self.expires_at is None:
             return False
         return (now or utcnow()) >= self.expires_at
+
+    def is_not_yet_active(self, now: datetime | None = None) -> bool:
+        """True before the authorized window opens (``starts_at`` in the future)."""
+
+        if self.starts_at is None:
+            return False
+        return (now or utcnow()) < self.starts_at

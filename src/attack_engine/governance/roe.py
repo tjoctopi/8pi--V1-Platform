@@ -25,6 +25,17 @@ class RoEEvaluator:
     def is_tool_forbidden(self, tool: str) -> bool:
         return tool in self._roe.forbidden_tools
 
+    def is_tool_allowed(self, tool: str) -> bool:
+        """Whether ``tool`` passes the RoE allowlist.
+
+        An empty ``allowed_tools`` means no allowlist restriction (any
+        non-forbidden tool may run). A non-empty allowlist is exclusive: only
+        listed tools pass. The ``forbidden_tools`` denylist is checked separately
+        and always wins.
+        """
+
+        return not self._roe.allowed_tools or tool in self._roe.allowed_tools
+
     def requires_gate(self, action: str) -> bool:
         return action in self._roe.gated_actions
 
