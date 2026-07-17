@@ -104,6 +104,39 @@ def test_scope_from_roe_splits_targets_and_sets_intensity() -> None:
     assert scope.expires_at is not None
 
 
+def _adapter_with_test_auth(allow: bool) -> EngineAdapter:
+    settings = Settings(
+        env="test", model_mock=True, allow_test_authorization=allow,
+        audit_backend=AuditBackend.MEMORY, eventbus_backend=EventBusBackend.MEMORY,
+        sandbox_backend=SandboxBackend.NOOP,
+    )
+    audit = AuditLog(MemoryAuditBackend())
+    engine = Engine(
+        settings, audit=audit, event_bus=InMemoryEventBus(),
+        gateway=ModelGateway(settings=settings, provider=MockProvider(), audit=audit),
+        sandbox=FakeSandbox(), registry=default_registry(),
+    )
+    return EngineAdapter(engine)
+
+
+def test_open_for_testing_one_click_when_enabled() -> None:
+    adapter = _adapter_with_test_auth(True)
+    eng = adapter.open_for_testing("acme-001", ["10.5.0.12", "https://juice.local"])
+    assert eng.scope.is_test_authorization
+    assert eng.scope.engagement_id == "eng-acme-001"
+    assert "10.5.0.12/32" in eng.scope.allowed_cidrs
+    assert "juice.local" in eng.scope.allowed_hosts
+    assert adapter.is_open("acme-001")
+
+
+def test_open_for_testing_refused_without_optin() -> None:
+    from attack_engine.errors import AttackEngineError
+
+    adapter = _adapter_with_test_auth(False)
+    with pytest.raises(AttackEngineError, match="not enabled"):
+        adapter.open_for_testing("acme-001", ["10.5.0.12"])
+
+
 def test_recon_intensity_stays_read_only() -> None:
     scope = scope_from_roe(
         "x", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "recon"},

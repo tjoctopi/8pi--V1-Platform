@@ -46,7 +46,7 @@ from .gateway.router import ModelGateway
 from .governance.audit import AuditLog
 from .governance.audit_backends import build_audit_backend
 from .governance.authorization import KillSwitch
-from .governance.gates import HumanGate, Responder, deny_all
+from .governance.gates import HumanGate, Responder, approve_all, deny_all
 from .knowledge.store import KnowledgeStore
 from .logging import configure_logging, get_logger
 from .schemas.agentspec import AgentSpec
@@ -369,6 +369,16 @@ class Engine:
         — the EngagementManager uses it to wire an RBAC-authorised approver.
         """
 
+        # A one-click TEST authorization is a dev/test convenience. It works only
+        # where a deployment has explicitly opted in (AE_ALLOW_TEST_AUTH=true) —
+        # independent of env, so a testing deployment can enable it and a real one
+        # cannot enable it by accident. Off by default → refuse.
+        if scope.is_test_authorization and not self.settings.allow_test_authorization:
+            raise AttackEngineError(
+                f"scope {scope.engagement_id!r} carries a TEST authorization but "
+                "this deployment has not enabled it; set AE_ALLOW_TEST_AUTH=true on "
+                "a testing deployment, or provide a real signed scope"
+            )
         must_sign = self.settings.is_prod() if require_signed is None else require_signed
         if must_sign and not scope.is_signed():
             raise AttackEngineError(
@@ -376,6 +386,11 @@ class Engine:
             )
         if scope.is_expired():
             raise AttackEngineError(f"scope {scope.engagement_id!r} has expired")
+        if scope.is_test_authorization:
+            _log.warning(
+                "running under a TEST authorization (dev/test only)",
+                engagement_id=scope.engagement_id,
+            )
 
         store = KnowledgeStore(
             scope.engagement_id, event_bus=self.event_bus, graph=self._build_graph(scope)
@@ -389,7 +404,14 @@ class Engine:
             event_bus=self.event_bus,
             network=network,
         )
-        gate = HumanGate(self.audit, responder=gate_responder or self.gate_responder)
+        # Under a TEST authorization, the whole offensive chain should run with just
+        # the user's authorization — no gate friction. So when the caller didn't wire
+        # a responder, a test scope auto-approves gates (the operator already opted in
+        # via AE_ALLOW_TEST_AUTH). Real scopes keep the engine default (deny-all).
+        responder = gate_responder or self.gate_responder
+        if scope.is_test_authorization and gate_responder is None:
+            responder = approve_all()
+        gate = HumanGate(self.audit, responder=responder)
         kill_switch = KillSwitch()
         session_manager = SessionManager(scope, self.audit)
         ctx = AgentContext(
@@ -427,3 +449,29 @@ class Engine:
             kill_switch=kill_switch,
             calibrator=self.calibrator,
         )
+
+    def testing_engagement(
+        self,
+        targets: list[str],
+        *,
+        autonomy_tier: int = 2,
+        auto_approve_gates: bool = True,
+        **scope_kwargs: object,
+    ) -> Engagement:
+        """One-click **test** engagement — build a test scope + open it, ready to run.
+
+        The frictionless path for local/range testing:
+        ``engine.testing_engagement(["10.5.0.12"])`` returns a live Engagement with
+        a signed (test-sentinel) scope and, by default, an auto-approving gate so
+        gated actions don't block. Refuses in production via the same fail-safe as
+        :meth:`engagement` — the test sentinel is never valid in prod.
+
+        For a real engagement, build a properly signed Scope and call
+        :meth:`engagement` instead.
+        """
+
+        scope = Scope.for_testing(
+            targets, autonomy_tier=autonomy_tier, **scope_kwargs  # type: ignore[arg-type]
+        )
+        responder = approve_all() if auto_approve_gates else None
+        return self.engagement(scope, gate_responder=responder)

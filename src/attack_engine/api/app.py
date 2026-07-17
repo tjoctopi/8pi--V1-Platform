@@ -320,6 +320,41 @@ def create_app() -> FastAPI:
         store().save_engagement(doc)
         return _list_item(doc)
 
+    @api.post("/engagements/{eid}/activate-test")
+    async def activate_test(
+        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """One-click activate for TESTING — opens the engagement without signing.
+
+        Only works when the deployment set ``AE_ALLOW_TEST_AUTH=true`` (a testing
+        deployment); the engine refuses the test authorization otherwise. Builds a
+        ``Scope.for_testing`` from the RoE's scope_allowlist so you can drive the
+        platform end-to-end from the console without the sign/authorization step.
+        """
+
+        if not adapter().engine.settings.allow_test_authorization:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "test authorization is not enabled on this deployment "
+                "(set AE_ALLOW_TEST_AUTH=true on a testing deployment)",
+            )
+        doc = _load(eid)
+        targets = list(doc["roe"].get("scope_allowlist") or [])
+        if not targets:
+            raise HTTPException(
+                status.HTTP_412_PRECONDITION_FAILED,
+                "RoE needs a scope_allowlist target to test against",
+            )
+        try:
+            adapter().open_for_testing(eid, targets)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        doc["status"] = "active"
+        doc["halted"] = False
+        doc["roe"]["test_authorization"] = True  # mark it as a test run in the record
+        store().save_engagement(doc)
+        return _list_item(doc)
+
     @api.post("/engagements/{eid}/pause")
     async def pause(
         eid: str, _: dict[str, Any] = Depends(require_role("operator"))

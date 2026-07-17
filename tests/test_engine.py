@@ -33,6 +33,7 @@ def test_settings() -> Settings:
         audit_backend=AuditBackend.MEMORY,
         eventbus_backend=EventBusBackend.MEMORY,
         sandbox_backend=SandboxBackend.NOOP,
+        allow_test_authorization=True,  # a testing deployment opts in
     )
 
 
@@ -182,6 +183,58 @@ def test_adversary_campaign_from_engagement_wires_specialists(
     }
     # out-of-scope targets are skipped, not fatal
     AdversaryCampaign.from_engagement(engagement, targets=["8.8.8.8"], max_rounds=1)
+
+
+def test_testing_engagement_one_click(engine: Engine) -> None:
+    """engine.testing_engagement(targets) opens a ready-to-run engagement (dev)."""
+
+    eng = engine.testing_engagement(["10.5.0.12"])
+    assert eng.scope.is_test_authorization
+    assert eng.scope.roe.autonomy_tier == 2
+    # start recorded in the immutable log
+    assert any(e.action == "engagement.start"
+               for e in engine.audit.entries(eng.scope.engagement_id))
+
+
+def test_test_authorization_runs_offensive_chain_gate_free(engine: Engine) -> None:
+    """Under a test authorization, high-impact gates auto-approve — the full
+    offensive chain runs on user authorization alone, no gate friction."""
+
+    eng = engine.testing_engagement(["10.5.0.12"])
+    approved = eng.context.gate.require(
+        engagement_id=eng.scope.engagement_id, gate="exploit_confirm",
+        requested_by="tester", target="10.5.0.12", summary="confirm RCE",
+    )
+    assert approved  # no human needed under a test authorization
+
+
+def test_test_authorization_requires_explicit_optin() -> None:
+    """The one-click test sentinel is refused unless the deployment opts in
+    (AE_ALLOW_TEST_AUTH) — independent of env, off by default (fail-safe)."""
+
+    from attack_engine.config import Environment
+    from attack_engine.eventbus.memory import InMemoryEventBus
+
+    def _engine(env: Environment, allow: bool) -> Engine:
+        s = Settings(
+            env=env, model_mock=True, allow_test_authorization=allow,
+            audit_backend=AuditBackend.MEMORY, eventbus_backend=EventBusBackend.MEMORY,
+            sandbox_backend=SandboxBackend.NOOP,
+        )
+        audit = AuditLog(MemoryAuditBackend())
+        return Engine(
+            s, audit=audit, event_bus=InMemoryEventBus(),
+            gateway=ModelGateway(settings=s, provider=MockProvider(), audit=audit),
+            sandbox=FakeSandbox(), registry=default_registry(),
+        )
+
+    # Opt-in OFF (even in dev) → refused.
+    with pytest.raises(AttackEngineError, match="not enabled it"):
+        _engine(Environment.DEV, allow=False).engagement(Scope.for_testing(["10.5.0.12"]))
+
+    # Opt-in ON (even a prod-shaped test deployment) → allowed.
+    eng = _engine(Environment.PROD, allow=True).testing_engagement(["10.5.0.12"])
+    assert eng.scope.is_test_authorization
 
 
 def test_load_scope_from_example_file() -> None:

@@ -274,7 +274,12 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
   calibration/regression (integration tier that actually lands footholds). **Gate:** multi-node, benchmarked, FP≈0.
 
 Governance hardening (egress control, a kill-switch that tears down live beacons, evidence capture, credential
-vaulting) rides along with every real-weapon phase (C, E, F) — not a separate tail.
+vaulting) rides along with every real-weapon phase (C, E, F) — not a separate tail. The honest, code-grounded
+backlog of these controls (status + file:line + recommended fix) lives in
+[governance-hardening.md](governance-hardening.md). A **one-click TEST authorization**
+(`Scope.for_testing` / `Engine.testing_engagement` / API `POST /engagements/{eid}/activate-test`) exists for
+frictionless dev/test — gated behind `AE_ALLOW_TEST_AUTH` (off by default), so it can never be a real-prod
+backdoor.
 
 ## Parallel product-surface backlog (deprioritized behind depth; pick up opportunistically)
 Carried over from the earlier console-wiring roadmap — still valid, lower priority than capability depth:

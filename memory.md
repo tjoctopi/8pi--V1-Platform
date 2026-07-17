@@ -275,6 +275,33 @@ _Last updated: 2026-07-16_
   across collectors/roast-parsing is worth a future slice). **Carry-forward:** fully live-LLM-driven full-chain
   run (reuses A/D/E plumbing) + Windows member host for on-wire lateral + campaign SSE narrative.
 
+## 2026-07-17 — One-click TEST authorization (frictionless deploy/test) + governance backlog
+- **Why:** user deploys the platform then tests the full offensive pipeline via the frontend; wants the
+  offensive chain to run on **user/test authorization alone** with zero deployment friction (they know the real
+  security measures; platform is early). So: test auth is the ONLY thing needed to run the pipeline in testing.
+- **`Settings.allow_test_authorization`** — env **`AE_ALLOW_TEST_AUTH`** (alias; default False, in `config.py`).
+  Engine (`engine.py engagement()`) refuses a test-authorization scope unless this is on — **independent of
+  `env`** (a prod-shaped *testing* deploy enables it; a real customer prod leaves it off).
+- **`Scope.for_testing(targets, ...)`** (`schemas/scope.py`): ready signed scope from IPs/CIDRs/hosts/URLs,
+  signature sentinel `TEST-AUTH-NOT-FOR-PROD` (→ `is_test_authorization`), tier 2, read_only False, broad
+  authorized_techniques, auto-expires 8h. `_classify_target` keeps CIDR masks, strips URL scheme/port/path.
+- **Gate-free under test auth (the key fix):** `engine.engagement()` auto-wires `approve_all()` gates for a
+  test-authorization scope when the caller passes no responder — so the WHOLE offensive chain (incl. high-impact
+  `exploit_confirm`/foothold) runs without human gates, via ANY path (Python/CLI/API/frontend). Real scopes keep
+  the deny-all default.
+- **One-call + API:** `Engine.testing_engagement(targets)`; API `POST /engagements/{eid}/activate-test` (operator
+  role) opens from the RoE `scope_allowlist` **without signing** (403 if flag off); adapter
+  `EngineAdapter.open_for_testing`.
+- **Green: 703 passed, ruff+mypy clean.** Tests: `tests/test_scope_testing_auth.py`, `tests/test_engine.py`
+  (opt-in + gate-free), `tests/api/test_adapter.py`.
+- **Deploy checklist for frontend testing:** `AE_ALLOW_TEST_AUTH=true` + `AE_API_ADMIN_EMAIL`/`_PASSWORD` +
+  a model key (`ANTHROPIC_API_KEY`) or `AE_MODEL_MOCK=true` + Docker socket mounted (docker-out-of-docker) +
+  `AE_SANDBOX_BACKEND=docker`/`AE_SANDBOX_NETWORK` (or `noop`) + a reachable target. Postgres/Redis/Neo4j
+  optional (sqlite/memory defaults fine single-node). None of the 6 governance guardrails are needed for testing.
+- **`governance-hardening.md` (repo root):** honest code-grounded backlog of the guardrails needed before a real
+  third-party target (scope crypto-verify, egress control, evidence capture, vault encryption, kill-switch
+  trip→teardown) — status + file:line + fix + sequencing. See [[8pi-deploy-readiness]].
+
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
   offensive platform — **full adversary emulation** (external web → internal network → AD →

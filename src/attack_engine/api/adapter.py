@@ -247,6 +247,24 @@ class EngineAdapter:
         self._scopes[scope.engagement_id] = scope
         return eng
 
+    def open_for_testing(
+        self, external_id: str, targets: list[str], *, autonomy_tier: int = 2
+    ) -> Engagement:
+        """One-click **test** engagement from the console — no signing overhead.
+
+        Builds a :meth:`Scope.for_testing` scope for ``targets`` and opens it. The
+        engine still refuses this unless the deployment set ``AE_ALLOW_TEST_AUTH``
+        (checked in :meth:`Engine.engagement`), so this is a testing-deployment
+        convenience, never a way around real authorization.
+        """
+
+        scope = Scope.for_testing(
+            targets,
+            engagement_id=engagement_id_for(external_id),
+            autonomy_tier=autonomy_tier,
+        )
+        return self.open(scope)
+
     def halt(
         self, external_id: str, *, by: str = "operator", reason: str = "operator halt"
     ) -> None:
