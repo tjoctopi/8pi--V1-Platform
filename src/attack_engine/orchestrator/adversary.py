@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING
 from ..agents.reasoning import ReasoningLoop
 from ..gateway.budget import TokenBudget
 from ..governance.audit import AuditLog
-from ..governance.authorization import KillSwitch
+from ..governance.authorization import (
+    AuthorizationDecision,
+    AuthorizationPolicy,
+    KillSwitch,
+)
 from ..knowledge.worldmodel import WorldModel
 from ..logging import get_logger
 from ..schemas.common import StrictModel
@@ -41,6 +45,53 @@ if TYPE_CHECKING:
     from .campaign import AdversaryProfile
 
 _log = get_logger("orchestrator.adversary")
+
+#: Defense-evasion ATT&CK techniques treated as **measured, always-gated** testing:
+#: an evasion TTP never runs autonomously regardless of autonomy tier — it blocks
+#: on an explicit human approve/deny. This is the guardrail the strategy requires
+#: (evasion is a defensive-testing capability inside signed scope, never a general
+#: "make malware undetectable" tool). Enforced at execution by keeping these off
+#: the autonomous allowlist; surfaced here so a campaign's posture is transparent.
+EVASION_TECHNIQUES: frozenset[str] = frozenset({
+    "T1027",   # Obfuscated Files or Information
+    "T1070",   # Indicator Removal on Host
+    "T1140",   # Deobfuscate/Decode Files or Information
+    "T1202",   # Indirect Command Execution
+    "T1218",   # System Binary Proxy Execution
+    "T1562",   # Impair Defenses
+    "T1055",   # Process Injection
+})
+
+
+class AuthorizationSummary(StrictModel):
+    """How a profile's declared TTPs map onto the signed RoE — the profile only
+    *declares*; the RoE *decides*. Makes the autonomy contract auditable."""
+
+    autonomy_tier: int
+    #: TTPs the signed RoE pre-authorizes to run autonomously at this tier.
+    autonomous: list[str] = []
+    #: TTPs that run but gate to a human first (high-impact / not pre-authorized).
+    gated: list[str] = []
+    #: Defense-evasion TTPs — always gated as measured testing, never autonomous.
+    gated_evasion: list[str] = []
+
+
+def authorization_summary(
+    scope: Scope, techniques: frozenset[str]
+) -> AuthorizationSummary:
+    """Classify each declared technique as autonomous / gated / gated-evasion under
+    ``scope``'s signed RoE (the same :class:`AuthorizationPolicy` the runtime uses)."""
+
+    policy = AuthorizationPolicy(scope)
+    summary = AuthorizationSummary(autonomy_tier=scope.roe.autonomy_tier)
+    for tech in sorted(techniques):
+        if tech in EVASION_TECHNIQUES:
+            summary.gated_evasion.append(tech)
+        elif policy.decide(tech, tech) is AuthorizationDecision.AUTONOMOUS:
+            summary.autonomous.append(tech)
+        else:
+            summary.gated.append(tech)
+    return summary
 
 
 @dataclass
@@ -80,6 +131,8 @@ class CampaignOutcome(StrictModel):
     autonomous_actions: int = 0
     gated_actions: int = 0
     audit_intact: bool = True
+    #: The profile↔RoE authorization contract (None when no profile is set).
+    authorization: AuthorizationSummary | None = None
 
     def to_markdown(self) -> str:
         head = "REACHED" if self.goal_reached else "NOT REACHED"
@@ -108,6 +161,15 @@ class CampaignOutcome(StrictModel):
         if self.owned_frontier:
             lines += ["", "## Owned principals", "",
                       *[f"- `{o}`" for o in self.owned_frontier]]
+        a = self.authorization
+        if a is not None:
+            lines += ["", f"## Profile authorization (RoE tier {a.autonomy_tier})", ""]
+            lines.append(f"- Autonomous: {', '.join(f'`{t}`' for t in a.autonomous) or '—'}")
+            lines.append(f"- Gated (human-approved): "
+                         f"{', '.join(f'`{t}`' for t in a.gated) or '—'}")
+            if a.gated_evasion:
+                lines.append(f"- Evasion testing (always gated): "
+                             f"{', '.join(f'`{t}`' for t in a.gated_evasion)}")
         return "\n".join(lines) + "\n"
 
 
@@ -124,6 +186,9 @@ class AdversaryCampaign:
     budget: TokenBudget | None = None
     max_rounds: int = 4
     profile_name: str = "custom"
+    #: The adversary profile whose TTPs are emulated (its declared techniques are
+    #: classified against the signed RoE for the outcome's authorization summary).
+    profile: AdversaryProfile | None = None
     actor: str = "campaign"
     _runs: list[PhaseRun] = field(default_factory=list, init=False)
 
@@ -213,6 +278,10 @@ class AdversaryCampaign:
         entries = self.audit.entries(self.scope.engagement_id)
         autonomous = sum(1 for e in entries if e.action == "action.authorized")
         gated = sum(1 for e in entries if e.action == "gate.request")
+        authorization = (
+            authorization_summary(self.scope, self.profile.techniques)
+            if self.profile is not None else None
+        )
         return CampaignOutcome(
             engagement_id=self.scope.engagement_id,
             profile=self.profile_name,
@@ -226,6 +295,7 @@ class AdversaryCampaign:
             autonomous_actions=autonomous,
             gated_actions=gated,
             audit_intact=self.audit.verify(),
+            authorization=authorization,
         )
 
     # --- construction from a live engagement ----------------------------------
@@ -271,7 +341,7 @@ class AdversaryCampaign:
             scope=engagement.scope, world_model=wm, audit=engagement.audit,
             phases=phases, goal=goal or DomainAdminObjective(),
             kill_switch=engagement.kill_switch, budget=budget, max_rounds=max_rounds,
-            profile_name=profile.name if profile else "custom",
+            profile_name=profile.name if profile else "custom", profile=profile,
         )
 
 

@@ -188,3 +188,80 @@ def test_outcome_to_markdown_smoke() -> None:
     md = campaign.run().to_markdown()
     assert "# Adversary campaign — apt-test" in md
     assert "REACHED" in md
+
+
+# --- F2: adversary profiles, autonomy tiers, gated evasion framing ---------------
+
+
+def _tiered_scope(*, tier: int, authorized=frozenset()) -> Scope:
+    return Scope(
+        engagement_id="eng-f", allowed_cidrs=("10.5.0.0/24",),
+        roe=RulesOfEngagement(autonomy_tier=tier, authorized_techniques=authorized),
+        authorized_by="lead@8pi.ai", signature="signed",
+    )
+
+
+def test_authorization_summary_classifies_by_roe() -> None:
+    from attack_engine.orchestrator.adversary import authorization_summary
+
+    scope = _tiered_scope(tier=2, authorized=frozenset({"T1190", "T1210"}))
+    summary = authorization_summary(scope, frozenset({"T1190", "T1210", "T1078", "T1027"}))
+    assert summary.autonomy_tier == 2
+    assert set(summary.autonomous) == {"T1190", "T1210"}   # on the signed allowlist
+    assert summary.gated == ["T1078"]                       # not pre-authorized → gates
+    assert summary.gated_evasion == ["T1027"]               # evasion → always gated
+
+
+def test_evasion_technique_never_autonomous_even_if_allowlisted() -> None:
+    from attack_engine.orchestrator.adversary import authorization_summary
+
+    # Even if an operator lists an evasion TTP as authorized, it must still gate.
+    scope = _tiered_scope(tier=3, authorized=frozenset({"T1027", "T1562"}))
+    summary = authorization_summary(scope, frozenset({"T1027", "T1562"}))
+    assert summary.autonomous == []
+    assert set(summary.gated_evasion) == {"T1027", "T1562"}
+
+
+def test_tier0_gates_everything() -> None:
+    from attack_engine.orchestrator.adversary import authorization_summary
+
+    scope = _tiered_scope(tier=0, authorized=frozenset({"T1190"}))
+    summary = authorization_summary(scope, frozenset({"T1190", "T1078"}))
+    assert summary.autonomous == []                         # tier 0 → all gate
+    assert set(summary.gated) == {"T1190", "T1078"}
+
+
+def test_campaign_surfaces_profile_authorization() -> None:
+    from attack_engine.orchestrator.campaign import AdversaryProfile
+
+    profile = AdversaryProfile(
+        id="apt", name="APT", techniques=frozenset({"T1190", "T1078", "T1027"}),
+        autonomy_tier=2,
+    )
+    audit = AuditLog()
+    campaign = AdversaryCampaign(
+        scope=_tiered_scope(tier=2, authorized=frozenset({"T1190"})),
+        world_model=WorldModel("eng-f"), audit=audit,
+        phases=[CampaignPhase("identity", _FakeLoop(_own_domain_admin),
+                              DomainAdminObjective())],
+        goal=DomainAdminObjective(), profile_name=profile.name, profile=profile,
+    )
+    outcome = campaign.run()
+    assert outcome.authorization is not None
+    assert outcome.authorization.autonomous == ["T1190"]
+    assert outcome.authorization.gated == ["T1078"]
+    assert outcome.authorization.gated_evasion == ["T1027"]
+    assert "Evasion testing (always gated)" in outcome.to_markdown()
+
+
+def test_evasion_tester_builtin_profile_is_always_gated() -> None:
+    from attack_engine.orchestrator.adversary import authorization_summary
+    from attack_engine.orchestrator.profiles import get_profile
+
+    profile = get_profile("evasion-tester")
+    # Grant EVERYTHING the profile declares at max autonomy...
+    scope = _tiered_scope(tier=3, authorized=profile.techniques)
+    summary = authorization_summary(scope, profile.techniques)
+    # ...the evasion TTPs still land in the always-gated bucket, never autonomous.
+    assert {"T1027", "T1070", "T1562", "T1055"} <= set(summary.gated_evasion)
+    assert not (set(summary.autonomous) & {"T1027", "T1070", "T1562", "T1055"})

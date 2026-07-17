@@ -54,6 +54,27 @@ BUILTIN_PROFILES: dict[str, AdversaryProfile] = {
         }),
         autonomy_tier=2,
     ),
+    "evasion-tester": AdversaryProfile(
+        id="evasion-tester",
+        name="Defense-Evasion Tester",
+        description="A measured defensive-testing profile: emulates a full-chain "
+                    "adversary that ALSO exercises defense-evasion TTPs (obfuscation, "
+                    "indicator removal, impair-defenses). Every evasion technique "
+                    "always gates to a human — never autonomous, regardless of tier. "
+                    "This is authorized detection-efficacy testing, not a "
+                    "make-undetectable tool.",
+        # The emulation chain is catalogued ATT&CK; the declared evasion TTPs ride
+        # in ``techniques`` (the authorization set) where they classify as always-
+        # gated (see EVASION_TECHNIQUES) — never on the autonomous allowlist.
+        kill_chain=("T1595", "T1190", "T1059", "T1078", "T1210", "T1021"),
+        techniques=frozenset({
+            "exploit_confirm", "post_exploitation", "T1190", "T1078", "T1210",
+            "T1021", "lateral_movement",
+            # defense-evasion TTPs — always gated (see EVASION_TECHNIQUES).
+            "T1027", "T1070", "T1562", "T1055",
+        }),
+        autonomy_tier=2,
+    ),
 }
 
 

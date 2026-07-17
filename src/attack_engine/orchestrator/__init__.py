@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from .adversary import (
+    EVASION_TECHNIQUES,
     AdversaryCampaign,
+    AuthorizationSummary,
     CampaignOutcome,
     CampaignPhase,
     PhaseRun,
+    authorization_summary,
     seed_targets,
 )
 from .controller import ControllerResult, ObjectiveController
@@ -42,4 +45,7 @@ __all__ = [
     "CampaignPhase",
     "PhaseRun",
     "seed_targets",
+    "AuthorizationSummary",
+    "authorization_summary",
+    "EVASION_TECHNIQUES",
 ]
