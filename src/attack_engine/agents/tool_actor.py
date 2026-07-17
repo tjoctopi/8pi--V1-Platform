@@ -17,6 +17,7 @@ from ..errors import (
     SandboxError,
     ScopeViolationError,
     ToolExecutionError,
+    ToolNotRegisteredError,
 )
 from ..logging import get_logger
 from ..schemas.tools import ToolProfile
@@ -46,6 +47,14 @@ class ToolRunnerActor:
         except (ToolExecutionError, SandboxError) as exc:
             _log.warning("actor: tool degraded", tool=action.tool, error=str(exc))
             return ActionOutcome(ok=False, summary=f"degraded: {exc}")
+        except (ToolNotRegisteredError, ValueError) as exc:
+            # An invalid action the planner proposed — an unknown tool name, or a
+            # malformed call missing a required arg. It must not crash the loop; it
+            # becomes an unproductive step the Reflector adapts from (same contract
+            # as any other degraded action). The kill-switch's StopConditionReached
+            # is deliberately NOT caught here — it must propagate and halt the run.
+            _log.warning("actor: invalid action", tool=action.tool, error=str(exc))
+            return ActionOutcome(ok=False, summary=f"invalid action: {exc}")
 
         summary = (
             f"{action.tool} on {action.target}: exit={result.exit_code} "

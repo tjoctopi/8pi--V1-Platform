@@ -83,6 +83,25 @@ def test_actor_degrades_on_tool_error() -> None:
     assert "degraded" in outcome.summary
 
 
+def test_actor_degrades_on_bad_tool_args() -> None:
+    # A malformed tool call (missing required args → ValueError from build_argv)
+    # must degrade, not crash the loop/campaign.
+    actor = ToolRunnerActor(_FakeRunner(error=ValueError("bloodhound requires 'domain'")))
+    outcome = actor.act(ProposedAction(tool="bloodhound", target="10.5.0.12", rationale="x"))
+    assert not outcome.ok
+    assert "invalid action" in outcome.summary
+
+
+def test_actor_degrades_on_unknown_tool() -> None:
+    # The planner can hallucinate a tool name; an unknown tool must degrade, not crash.
+    from attack_engine.errors import ToolNotRegisteredError
+
+    actor = ToolRunnerActor(_FakeRunner(error=ToolNotRegisteredError("web-surface")))
+    outcome = actor.act(ProposedAction(tool="web-surface", target="10.5.0.12", rationale="x"))
+    assert not outcome.ok
+    assert "invalid action" in outcome.summary
+
+
 # --- ReconObserver: recon output -> beliefs -------------------------------------
 
 
