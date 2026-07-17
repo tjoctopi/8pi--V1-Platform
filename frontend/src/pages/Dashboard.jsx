@@ -250,7 +250,7 @@ export default function Dashboard() {
   return (
     <div className="p-6 max-w-[1500px] mx-auto fadein">
       <SectionTitle
-        sub="Scoped, authorized, fully-audited purple-team engagements."
+        sub="Scoped, authorized, fully-audited offensive engagements."
         right={
           <Btn icon={Plus} onClick={() => setOpen(true)} data-testid="new-engagement-btn">
             New Engagement
@@ -285,7 +285,7 @@ export default function Dashboard() {
             </button>
           }>Engagements</SectionTitle>
           {engs.length === 0 ? (
-            <Empty icon={Target} title="No engagements yet" hint="Create an engagement to begin scoping a purple-team run."
+            <Empty icon={Target} title="No engagements yet" hint="Create an engagement to begin scoping an offensive run."
               action={<Btn icon={Plus} onClick={() => setOpen(true)}>New Engagement</Btn>} />
           ) : (
             <div className="grid sm:grid-cols-2 gap-4">

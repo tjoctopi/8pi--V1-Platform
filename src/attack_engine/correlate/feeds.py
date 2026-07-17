@@ -66,6 +66,12 @@ class LocalCveFeed:
         self._records = records
         self._kev = {r.id for r in records if r.kev}
 
+    @property
+    def records(self) -> list[CveRecord]:
+        """All loaded CVE records (for the console's CVE cache view)."""
+
+        return list(self._records)
+
     @classmethod
     def from_json(cls, path: str | Path | None = None) -> LocalCveFeed:
         data = json.loads(Path(path or _SEED_PATH).read_text(encoding="utf-8"))

@@ -113,6 +113,32 @@ class TestRoERefusal:
             runner.run("nmap", "10.0.4.12")
         assert fake_sandbox.calls == []
 
+    def test_tool_not_in_allowlist_refused(
+        self, scope: Scope, audit: AuditLog, fake_sandbox: FakeSandbox
+    ) -> None:
+        # A non-empty allowlist that omits nmap must refuse it at the boundary.
+        allow_scope = scope.model_copy(
+            update={"roe": RulesOfEngagement(allowed_tools=frozenset({"httpx"}))}
+        )
+        runner = ToolRunner(
+            allow_scope, registry=default_registry(), audit=audit, sandbox=fake_sandbox
+        )
+        with pytest.raises(RoEViolationError, match="allowlist"):
+            runner.run("nmap", "10.0.4.12")
+        assert fake_sandbox.calls == []
+
+    def test_tool_in_allowlist_runs(
+        self, scope: Scope, audit: AuditLog, fake_sandbox: FakeSandbox
+    ) -> None:
+        allow_scope = scope.model_copy(
+            update={"roe": RulesOfEngagement(allowed_tools=frozenset({"nmap"}))}
+        )
+        runner = ToolRunner(
+            allow_scope, registry=default_registry(), audit=audit, sandbox=fake_sandbox
+        )
+        result = runner.run("nmap", "10.0.4.12")  # allowed → executes
+        assert result.audit_id
+
     def test_mutating_profile_refused_under_read_only(
         self, scope: Scope, audit: AuditLog, fake_sandbox: FakeSandbox
     ) -> None:

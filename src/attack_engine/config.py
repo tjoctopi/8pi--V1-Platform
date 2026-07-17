@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     )
 
     env: Environment = Environment.DEV
+    #: Opt-in switch for the one-click TEST authorization (``Scope.for_testing`` /
+    #: ``Engine.testing_engagement``). OFF by default. Set ``AE_ALLOW_TEST_AUTH=true``
+    #: on a **testing** deployment so you can drive the engine end-to-end (e.g. via
+    #: the frontend) without the full signed-scope overhead. Leave it OFF on any
+    #: deployment that could act against a real target — a test authorization is a
+    #: dev/test convenience, never real authorization. Independent of ``env`` so a
+    #: prod-shaped test deploy can enable it explicitly and a real prod cannot enable
+    #: it by accident.
+    allow_test_authorization: bool = Field(default=False, alias="AE_ALLOW_TEST_AUTH")
 
     # --- logging ---
     log_level: str = "INFO"

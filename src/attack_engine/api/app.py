@@ -29,7 +29,7 @@ from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..errors import AttackEngineError
@@ -82,6 +82,25 @@ class RoeUpdate(BaseModel):
 
 class SignBody(BaseModel):
     signed_by: str
+
+
+class DenyBody(BaseModel):
+    reason: str = "denied by approver"
+
+
+class InferBody(BaseModel):
+    messages: list[dict[str, Any]] = []
+    sensitivity: str = "internal"
+    route: str | None = None
+    purpose: str = "analyst-query"
+    task_class: str = "reason"
+    engagement_id: str | None = None
+
+
+class ChatBody(BaseModel):
+    message: str
+    history: list[dict[str, Any]] = []
+    context: dict[str, Any] | None = None
 
 
 # ── app factory ───────────────────────────────────────────────────────────────
@@ -196,15 +215,19 @@ def create_app() -> FastAPI:
     # ── engagement lifecycle ─────────────────────────────────────────────────
     def _counts(doc: dict[str, Any]) -> dict[str, Any]:
         eid = doc["id"]
-        a = f = 0
+        a = f = p = inv = runs = mc = 0
         if doc["status"] == "active" and adapter().is_open(eid):
             try:
                 a = len(adapter().assets(eid))
                 f = len(adapter().findings(eid))
+                p = adapter().pending_approvals(eid)
+                inv = len(adapter().invocations(eid))
+                runs = len(adapter().agent_runs(eid))
+                mc = len(adapter().model_calls(eid))
             except AttackEngineError:
                 pass
-        return {"assets": a, "findings": f, "invocations": 0,
-                "pending_approvals": 0, "agent_runs": 0, "model_calls": 0}
+        return {"assets": a, "findings": f, "invocations": inv,
+                "pending_approvals": p, "agent_runs": runs, "model_calls": mc}
 
     def _list_item(doc: dict[str, Any]) -> dict[str, Any]:
         c = _counts(doc)
@@ -274,7 +297,7 @@ def create_app() -> FastAPI:
 
     @api.put("/engagements/{eid}/roe")
     async def update_roe(
-        eid: str, body: RoeUpdate, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, body: RoeUpdate, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         if doc["roe"].get("signature"):
@@ -286,11 +309,18 @@ def create_app() -> FastAPI:
             "window_end": body.window_end, "version": doc["roe"].get("version", 1) + 1,
         })
         store().save_engagement(doc)
+        adapter().record_governance(
+            eid, actor=user["email"], action="roe.updated",
+            payload={"version": doc["roe"]["version"],
+                     "max_intensity": doc["roe"]["max_intensity"],
+                     "scope_targets": len(doc["roe"]["scope_allowlist"]),
+                     "allowed_tools": doc["roe"]["allowed_tools"]},
+        )
         return dict(doc["roe"])
 
     @api.post("/engagements/{eid}/roe/sign")
     async def sign_roe(
-        eid: str, body: SignBody, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, body: SignBody, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         roe: dict[str, Any] = doc["roe"]
@@ -298,11 +328,16 @@ def create_app() -> FastAPI:
         roe["signed_at"] = now_iso()
         roe["signature"] = secrets.token_hex(24)  # binds the human authorization
         store().save_engagement(doc)
+        adapter().record_governance(
+            eid, actor=user["email"], action="roe.signed",
+            payload={"signed_by": body.signed_by, "version": roe.get("version", 1),
+                     "signature_prefix": roe["signature"][:12]},
+        )
         return roe
 
     @api.post("/engagements/{eid}/activate")
     async def activate(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         roe = doc["roe"]
@@ -318,22 +353,68 @@ def create_app() -> FastAPI:
         doc["status"] = "active"
         doc["halted"] = False
         store().save_engagement(doc)
+        adapter().record_governance(
+            eid, actor=user["email"], action="engagement.activated",
+            payload={"max_intensity": roe.get("max_intensity"),
+                     "signed_by": roe.get("signed_by")},
+        )
+        return _list_item(doc)
+
+    @api.post("/engagements/{eid}/activate-test")
+    async def activate_test(
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """One-click activate for TESTING — opens the engagement without signing.
+
+        Only works when the deployment set ``AE_ALLOW_TEST_AUTH=true`` (a testing
+        deployment); the engine refuses the test authorization otherwise. Builds a
+        ``Scope.for_testing`` from the RoE's scope_allowlist so you can drive the
+        platform end-to-end from the console without the sign/authorization step.
+        """
+
+        if not adapter().engine.settings.allow_test_authorization:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "test authorization is not enabled on this deployment "
+                "(set AE_ALLOW_TEST_AUTH=true on a testing deployment)",
+            )
+        doc = _load(eid)
+        targets = list(doc["roe"].get("scope_allowlist") or [])
+        if not targets:
+            raise HTTPException(
+                status.HTTP_412_PRECONDITION_FAILED,
+                "RoE needs a scope_allowlist target to test against",
+            )
+        try:
+            adapter().open_for_testing(eid, targets)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        doc["status"] = "active"
+        doc["halted"] = False
+        doc["roe"]["test_authorization"] = True  # mark it as a test run in the record
+        store().save_engagement(doc)
+        adapter().record_governance(
+            eid, actor=user["email"], action="engagement.activated",
+            payload={"test_authorization": True, "targets": len(targets)},
+        )
         return _list_item(doc)
 
     @api.post("/engagements/{eid}/pause")
     async def pause(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         doc["status"] = "paused"
         store().save_engagement(doc)
+        adapter().record_governance(eid, actor=user["email"], action="engagement.paused")
         return _list_item(doc)
 
     @api.post("/engagements/{eid}/close")
     async def close(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
+        adapter().record_governance(eid, actor=user["email"], action="engagement.closed")
         if adapter().is_open(eid):
             adapter().close(eid)
         doc["status"] = "closed"
@@ -350,11 +431,15 @@ def create_app() -> FastAPI:
             adapter().halt(eid, by=user["email"])
         doc["halted"] = True
         store().save_engagement(doc)
+        adapter().record_governance(
+            eid, actor=user["email"], action="engagement.halted",
+            payload={"reason": "operator kill switch"},
+        )
         return {"halted": True}
 
     @api.post("/engagements/{eid}/resume")
     async def resume(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         # A tripped kill switch is a hard stop; resuming re-binds a fresh handle.
@@ -363,24 +448,27 @@ def create_app() -> FastAPI:
                 adapter().resume(eid)
         doc["halted"] = False
         store().save_engagement(doc)
+        adapter().record_governance(eid, actor=user["email"], action="engagement.resumed")
         return {"halted": False}
 
     @api.post("/engagements/{eid}/archive")
     async def archive(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         doc["archived"] = True
         store().save_engagement(doc)
+        adapter().record_governance(eid, actor=user["email"], action="engagement.archived")
         return {"archived": True}
 
     @api.post("/engagements/{eid}/unarchive")
     async def unarchive(
-        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
     ) -> dict[str, Any]:
         doc = _load(eid)
         doc["archived"] = False
         store().save_engagement(doc)
+        adapter().record_governance(eid, actor=user["email"], action="engagement.unarchived")
         return {"archived": False}
 
     # ── recon / assets ────────────────────────────────────────────────────
@@ -455,13 +543,21 @@ def create_app() -> FastAPI:
     # ── Phase 2–4 placeholders (valid empty shapes so the console renders) ───
     @api.get("/tools")
     async def tools() -> dict[str, Any]:
-        names = sorted(adapter().engine.registry.names()) \
-            if hasattr(adapter().engine.registry, "names") else []
-        return {"tools": [
-            {"tool_id": n, "name": n, "class": "recon", "min_intensity": "recon",
-             "license_verified": True, "category": "recon", "description": "",
-             "params": [], "installed": True, "effective_mode": "real"} for n in names
-        ], "tool_mode": "real"}
+        registry = adapter().engine.registry
+        names = sorted(registry.names()) if hasattr(registry, "names") else []
+        out = []
+        for n in names:
+            licensed = False
+            with contextlib.suppress(Exception):
+                licensed = bool(getattr(registry.resolve(n), "licensed", False))
+            out.append({
+                "tool_id": n, "name": n, "class": "recon", "min_intensity": "recon",
+                # licensed (commercial) tools show locked until RoE enables them
+                "license_verified": not licensed, "licensed": licensed,
+                "category": "recon", "description": "", "params": [],
+                "installed": True, "effective_mode": "real",
+            })
+        return {"tools": out, "tool_mode": "real"}
 
     @api.get("/tools/availability")
     async def tool_availability() -> dict[str, Any]:
@@ -469,7 +565,7 @@ def create_app() -> FastAPI:
 
     @api.get("/cve-cache")
     async def cve_cache() -> dict[str, Any]:
-        return {"cves": []}
+        return {"cves": adapter().cve_cache()}
 
     @api.get("/engagements/{eid}/invocations")
     async def invocations(eid: str, limit: int = 200) -> dict[str, Any]:
@@ -512,7 +608,37 @@ def create_app() -> FastAPI:
 
     @api.get("/engagements/{eid}/approvals")
     async def approvals(eid: str, status: str | None = None) -> dict[str, Any]:
-        return {"approvals": []}
+        _load(eid)
+        return {"approvals": adapter().approvals(eid, status)}
+
+    @api.post("/approvals/{aid}/approve")
+    async def approve(
+        aid: str, user: dict[str, Any] = Depends(require_role("approver"))
+    ) -> dict[str, Any]:
+        ok = adapter().resolve_approval(aid, approved=True, approver=user["email"])
+        if not ok:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "approval is no longer pending (already resolved or timed out)",
+            )
+        return {"ok": True, "decision": "approved"}
+
+    @api.post("/approvals/{aid}/deny")
+    async def deny(
+        aid: str,
+        body: DenyBody | None = None,
+        user: dict[str, Any] = Depends(require_role("approver")),
+    ) -> dict[str, Any]:
+        reason = (body.reason if body else None) or "denied by approver"
+        ok = adapter().resolve_approval(
+            aid, approved=False, approver=user["email"], reason=reason
+        )
+        if not ok:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "approval is no longer pending (already resolved or timed out)",
+            )
+        return {"ok": True, "decision": "denied"}
 
     @api.get("/model/routes")
     async def model_routes() -> dict[str, Any]:
@@ -541,6 +667,9 @@ def create_app() -> FastAPI:
             if d.get("halted"):
                 halted.append({"id": d["id"], "name": d["name"], "status": d["status"]})
             if d["status"] == "active" and adapter().is_open(d["id"]):
+                for ap in adapter().approvals(d["id"], status="pending"):
+                    approvals.append({**ap, "engagement_id": d["id"],
+                                      "engagement_name": d["name"]})
                 for f in adapter().findings(d["id"]):
                     if f["severity"] in ("crit", "high") and f["exploitability"] in (
                         "reachable", "confirmed"
@@ -569,8 +698,7 @@ def create_app() -> FastAPI:
                     "stats": {"entry": 0, "crown": 0, "pivot": 0, "paths": 0}}
         return adapter().attack_path(eid)
 
-    @api.get("/engagements/{eid}/report")
-    async def report(eid: str) -> dict[str, Any]:
+    def _build_report(eid: str) -> dict[str, Any]:
         doc = _load(eid)
         findings = adapter().findings(eid) if adapter().is_open(eid) else []
         summary = (
@@ -581,6 +709,36 @@ def create_app() -> FastAPI:
         )
         return {"generated_at": now_iso(), "engagement": _list_item(doc),
                 "roe": doc["roe"], "summary": summary, "findings": findings}
+
+    @api.get("/engagements/{eid}/report")
+    async def report(eid: str) -> dict[str, Any]:
+        return _build_report(eid)
+
+    @api.get("/engagements/{eid}/report.html")
+    async def report_html(eid: str) -> HTMLResponse:
+        from .report_html import render_report_html
+
+        return HTMLResponse(render_report_html(_build_report(eid)))
+
+    @api.get("/engagements/{eid}/report.pdf")
+    async def report_pdf(eid: str) -> Response:
+        from .report_html import render_report_html
+
+        html = render_report_html(_build_report(eid))
+        try:
+            from weasyprint import HTML as _WeasyHTML  # optional dep
+        except ImportError as exc:
+            raise HTTPException(
+                status.HTTP_501_NOT_IMPLEMENTED,
+                "PDF export requires the optional 'weasyprint' package "
+                "(not installed on this deployment) — use the HTML export instead.",
+            ) from exc
+        pdf = _WeasyHTML(string=html).write_pdf()
+        name = _load(eid)["name"].replace(" ", "_")
+        return Response(
+            content=pdf, media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="8pi-report-{name}.pdf"'},
+        )
 
     @api.get("/engagements/{eid}/assets/{aid}")
     async def asset_detail(eid: str, aid: str) -> dict[str, Any]:
@@ -598,16 +756,29 @@ def create_app() -> FastAPI:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, _NOT_WIRED)
 
     @api.post("/findings/{fid}/remediate")
-    async def remediate(fid: str) -> dict[str, Any]:
-        _unavailable()
+    async def remediate(
+        fid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        try:
+            return adapter().remediate_finding(fid, actor=user["email"])
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     @api.post("/findings/{fid}/retest")
-    async def retest(fid: str) -> dict[str, Any]:
-        _unavailable()
+    async def retest(
+        fid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        try:
+            return adapter().retest_finding(fid, actor=user["email"])
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     @api.post("/engagements/{eid}/refresh-cve")
-    async def refresh_cve(eid: str) -> dict[str, Any]:
-        _unavailable()
+    async def refresh_cve(
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        _load(eid)
+        return adapter().refresh_cve(eid, actor=user["email"])
 
     @api.post("/tools/{tool_id}/run")
     async def run_tool(tool_id: str) -> dict[str, Any]:
@@ -615,7 +786,10 @@ def create_app() -> FastAPI:
 
     @api.get("/invocations/{inv_id}/raw")
     async def invocation_raw(inv_id: str) -> dict[str, Any]:
-        _unavailable()
+        detail = adapter().invocation_raw(inv_id)
+        if detail is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "invocation not found")
+        return detail
 
     @api.post("/agents")
     async def create_agent() -> dict[str, Any]:
@@ -637,25 +811,37 @@ def create_app() -> FastAPI:
     async def agent_run(rid: str) -> dict[str, Any]:
         _unavailable()
 
-    @api.post("/approvals/{aid}/approve")
-    async def approve(aid: str) -> dict[str, Any]:
-        _unavailable()
-
-    @api.post("/approvals/{aid}/deny")
-    async def deny(aid: str) -> dict[str, Any]:
-        _unavailable()
-
     @api.post("/model/infer")
-    async def model_infer() -> dict[str, Any]:
-        _unavailable()
+    async def model_infer(
+        body: InferBody, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        if not body.messages:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "messages required")
+        try:
+            return adapter().model_infer(
+                messages=body.messages, sensitivity=body.sensitivity,
+                route=body.route, actor=user["email"],
+                engagement_id=body.engagement_id,
+            )
+        except AttackEngineError as exc:
+            return {"error": str(exc), "route": body.route or "policy-routed"}
 
     @api.post("/red-scope/chat")
-    async def red_scope_chat() -> dict[str, Any]:
-        _unavailable()
+    async def red_scope_chat(
+        body: ChatBody, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        try:
+            return adapter().red_scope_chat(
+                message=body.message, history=body.history, actor=user["email"]
+            )
+        except AttackEngineError as exc:
+            return {"reply": f"(model gateway unavailable: {exc})"}
 
     @api.post("/red-scope/agents")
-    async def red_scope_save() -> dict[str, Any]:
-        _unavailable()
+    async def red_scope_save(
+        body: dict[str, Any], user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        return adapter().save_red_scope_agent(body, actor=user["email"])
 
     app.include_router(public)
     app.include_router(api)

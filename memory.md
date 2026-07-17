@@ -3,7 +3,48 @@
 A running log of current state, decisions, and known gaps. Update this when things
 change so the next session starts with truth, not assumptions.
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-18_
+
+## 2026-07-18 — Console↔engine wiring: audit completeness, real RoE, and the stubbed actions
+- **Branch `feat/console-wiring-audit-roe`** off the `feat/phase-f-adversary` tip (NOT `dev`): dev is
+  missing 4 phase-f commits (one-click `activate-test`, the autonomous-reliability fixes) that the
+  console needs to run the pipeline — building on dev would ship a console that can't test the pipeline.
+  So this branch carries those forward; PR should target `dev`. Green: full suite + ruff + mypy clean
+  (176 src files); +999/-81 across 17 files; 5 new files.
+- **Slice 1 — every engagement action is now audited.** The engine only wrote `engagement.open`/`close`
+  to the hash chain; sign/activate/pause/halt/resume/archive/RoE-edits lived only in SQLite. Added
+  `EngineAdapter.record_governance()` → appends `roe.updated`/`roe.signed`/`engagement.activated|paused|
+  resumed|closed|halted|archived` to the REAL chain, attributed to the logged-in operator. Fixed a latent
+  serialize bug (actor was doubled) → `actor`=lane (operator/agent/approver/system), `actor_id`=identity;
+  AuditTab filters client-side. The Audit tab is now a complete, tamper-evident lifecycle record.
+- **Slice 2 — RoE actually drives the engine.** The console's "Allowed Tools" picker and "Scope Denylist"
+  were silently ignored and had NO engine backing. Added `RulesOfEngagement.allowed_tools` (empty = no
+  restriction; non-empty = exclusive allowlist, denylist still wins) enforced in `toolrunner/runner.py`;
+  `Scope.denied_cidrs`/`denied_hosts` + `starts_at` (not-before) enforced in `toolrunner/scope.py`
+  (`_is_denied`, `is_not_yet_active`); all mapped in `scope_from_roe`. Live-proven: allowed host runs,
+  denied host refused ("target explicitly denied by RoE"), off-allowlist tool refused, all audited.
+- **Slice 3 — human gates over HTTP.** New `api/approvals.py` `ApprovalBroker`: its `responder` (wired
+  into non-test opens via a new `manager.open(gate_responder=...)`) parks a gated action and BLOCKS the
+  engine worker thread on an Event; `GET /approvals` lists them; approve/deny resolve + unblock; timeout
+  fails closed (denied). Test-auth stays frictionless (engine auto-approve). Proven: a real
+  `exploit_confirm` gate parks → console resolves → engine unblocks → `gate.request`/`gate.approved` on
+  the chain. Red Scope `exploit_approvals` + stats/counts now show real pending counts.
+- **Slice 4 — remediate/re-test.** `remediate_finding` reuses the real `Converter` to PROPOSE a control
+  (propose-only; never patches the customer's estate); `retest_finding` reuses `RetestRunner` to re-run
+  the exact confirming check. Console status derives from the lifecycle: open→remediating→(closed|retest).
+- **Slice 5 — CVE cache + refresh.** `LocalCveFeed.records` property; `cve_cache()` serializes the loaded
+  feed; `refresh_cve()` rebuilds via `build_cve_feed(settings)`, swaps into engine + engagement, re-correlates.
+- **Slice 6 — report HTML/PDF.** New `api/report_html.py` (pure, self-contained, escaped, theme-aware);
+  `GET /report.html` always; `GET /report.pdf` via optional `weasyprint` → honest 501 when absent. `?token=`
+  query auth already supported for direct links.
+- **Slice 7 — model playground + Red Scope copilot** through the BYOM gateway (rule #4): `model_infer`
+  (sensitivity `sensitive`/`airgapped` pinned LOCAL — SEC-05), `red_scope_chat`, `save_red_scope_agent`.
+- **Slice 8 — honesty sweep.** Fixed `EngagementDetail` `estate_id`→`estate.id`; real engagement-list
+  counts (invocations/agent-runs/model-calls/pending-approvals); wired `/invocations/{id}/raw` via the audit
+  backend's `get_raw`; tools endpoint reports real `licensed`/`license_verified`; removed legacy "purple-team"
+  copy from the touched console files (docs/* still carry it — sweep when touched).
+- **Not committed** (awaiting the user's go). Comprehensive in-process HTTP smoke passed across the whole
+  surface; audit chain verifies valid end-to-end.
 
 ## 2026-07-16 — Phase A (the Brain) built on branch `feat/gateway-v2-structured-output`
 - **Branched off `origin/dev`.** Not committed yet (user wants continuous build until they ask for the PR).
@@ -274,6 +315,58 @@ _Last updated: 2026-07-16_
   collectors or an owned principal won't match its AD-graph node (hit this in the proof; a normalization pass
   across collectors/roast-parsing is worth a future slice). **Carry-forward:** fully live-LLM-driven full-chain
   run (reuses A/D/E plumbing) + Windows member host for on-wire lateral + campaign SSE narrative.
+
+## 2026-07-17 — Autonomous reliability fixed: full A→D pipeline lands a CONFIRMED foothold unattended
+- **Milestone:** the fully-autonomous stitch-through finally works. Live, no scripts, 1-click test auth,
+  real Claude + real Docker sandbox vs Metasploitable: recon(5-6 svc) → web crawl of Mutillidae →
+  auto-graduated 12 injectable candidates → oracles **VERIFIED the LFI on `page`** (lfi_file_read_oracle_v1),
+  **REJECTED 11 false candidates (zero FPs)** → correlate → **CONFIRMED lfi prob=0.98**. Script:
+  scratchpad/e2e_proof.py. (~220s/run; SQLi confirm has run-to-run variance, LFI confirms reliably.)
+- **Five reliability bugs fixed, all root-caused from live traces** (commits eb3bdad + 0594e79):
+  1. Actor crashed on bad LLM args (`ValueError` from build_argv) → degrade.
+  2. Actor crashed on hallucinated tool name (`ToolNotRegisteredError`) → degrade.
+  3. Actor crashed on rejected payload — `ToolProfile(args=...)` was built OUTSIDE the try, so the
+     shell-metachar guard's pydantic `ValidationError` (NOT a ValueError in v2) killed the loop. Moved inside
+     the try + catch it. `tool_actor.py`.
+  4. **Scope refused URL / host:port targets** (the big one): the web planner passes `http://h/path` / `h:80`;
+     the scope check only accepted bare IPs, so the CRAWLER kept failing "out-of-scope" on the AUTHORIZED
+     target → loop starved, nothing to confirm. `ScopeEnforcer` now normalizes URL/host:port → host for the
+     allowlist check (`_bare_target`, urlparse defeats the `http://allowed@evil` trick — never widens scope).
+     `toolrunner/scope.py`.
+  5. **Graduation never wired into the web loop** — beliefs accumulated but never became PROPOSED findings, so
+     verify() had nothing to confirm. `build_web_loop` now auto-graduates oracle-ready beliefs each step
+     (`_ObserveAndGraduate` composite observer, `graduate=True` default). `web_specialist.py`.
+- **Note the state semantics:** VERIFIED = oracle-proven impact (the core promise); CONFIRMED = verified +
+  correlated (reachability + scoring). Both are real; a proof script must check VERIFIED (or run correlate for
+  CONFIRMED). FindingState: PROPOSED → VERIFIED → CONFIRMED (or → REJECTED).
+- **709 unit tests green, ruff+mypy clean.** All on `feat/phase-f-adversary` (PR #15), pushed.
+
+## 2026-07-17 — One-click TEST authorization (frictionless deploy/test) + governance backlog
+- **Why:** user deploys the platform then tests the full offensive pipeline via the frontend; wants the
+  offensive chain to run on **user/test authorization alone** with zero deployment friction (they know the real
+  security measures; platform is early). So: test auth is the ONLY thing needed to run the pipeline in testing.
+- **`Settings.allow_test_authorization`** — env **`AE_ALLOW_TEST_AUTH`** (alias; default False, in `config.py`).
+  Engine (`engine.py engagement()`) refuses a test-authorization scope unless this is on — **independent of
+  `env`** (a prod-shaped *testing* deploy enables it; a real customer prod leaves it off).
+- **`Scope.for_testing(targets, ...)`** (`schemas/scope.py`): ready signed scope from IPs/CIDRs/hosts/URLs,
+  signature sentinel `TEST-AUTH-NOT-FOR-PROD` (→ `is_test_authorization`), tier 2, read_only False, broad
+  authorized_techniques, auto-expires 8h. `_classify_target` keeps CIDR masks, strips URL scheme/port/path.
+- **Gate-free under test auth (the key fix):** `engine.engagement()` auto-wires `approve_all()` gates for a
+  test-authorization scope when the caller passes no responder — so the WHOLE offensive chain (incl. high-impact
+  `exploit_confirm`/foothold) runs without human gates, via ANY path (Python/CLI/API/frontend). Real scopes keep
+  the deny-all default.
+- **One-call + API:** `Engine.testing_engagement(targets)`; API `POST /engagements/{eid}/activate-test` (operator
+  role) opens from the RoE `scope_allowlist` **without signing** (403 if flag off); adapter
+  `EngineAdapter.open_for_testing`.
+- **Green: 703 passed, ruff+mypy clean.** Tests: `tests/test_scope_testing_auth.py`, `tests/test_engine.py`
+  (opt-in + gate-free), `tests/api/test_adapter.py`.
+- **Deploy checklist for frontend testing:** `AE_ALLOW_TEST_AUTH=true` + `AE_API_ADMIN_EMAIL`/`_PASSWORD` +
+  a model key (`ANTHROPIC_API_KEY`) or `AE_MODEL_MOCK=true` + Docker socket mounted (docker-out-of-docker) +
+  `AE_SANDBOX_BACKEND=docker`/`AE_SANDBOX_NETWORK` (or `noop`) + a reachable target. Postgres/Redis/Neo4j
+  optional (sqlite/memory defaults fine single-node). None of the 6 governance guardrails are needed for testing.
+- **`governance-hardening.md` (repo root):** honest code-grounded backlog of the guardrails needed before a real
+  third-party target (scope crypto-verify, egress control, evidence capture, vault encryption, kill-switch
+  trip→teardown) — status + file:line + fix + sequencing. See [[8pi-deploy-readiness]].
 
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous

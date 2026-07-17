@@ -1,7 +1,7 @@
+/* eslint-disable react-hooks/exhaustive-deps -- intentional effect deps; preserved behavior */
 import React, { useEffect, useState } from "react";
 import { Certificate, PencilSimple, Signature, Play, LockKey } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
-import { INTENSITY } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, KV, Field, TextInput, Textarea, Select, Modal, useToast, errMsg } from "../../components/ui";
 
 const toLocal = (iso) => (iso ? new Date(iso).toISOString().slice(0, 16) : "");

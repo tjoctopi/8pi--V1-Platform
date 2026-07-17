@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   MagnifyingGlass, ShieldWarning, Robot, CaretDown, CaretRight, Check, X as XIcon,
-  Gavel, Lightning, Warning,
+  Gavel, Warning,
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Dot, Loading, Empty, Select, PreviewNotice, useToast, errMsg } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Select, PreviewNotice, useToast, errMsg } from "../../components/ui";
 import { useAuth, roleAtLeast } from "../../lib/auth";
 
 function StepRow({ s }) {

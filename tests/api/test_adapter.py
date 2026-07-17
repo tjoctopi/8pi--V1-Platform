@@ -27,6 +27,7 @@ from attack_engine.config import (
     Settings,
 )
 from attack_engine.engine import Engine
+from attack_engine.errors import AttackEngineError
 from attack_engine.eventbus.memory import InMemoryEventBus
 from attack_engine.gateway.provider import MockProvider
 from attack_engine.gateway.router import ModelGateway
@@ -102,6 +103,39 @@ def test_scope_from_roe_splits_targets_and_sets_intensity() -> None:
     assert "exploit_confirm" in scope.roe.authorized_techniques
     assert scope.is_signed()
     assert scope.expires_at is not None
+
+
+def _adapter_with_test_auth(allow: bool) -> EngineAdapter:
+    settings = Settings(
+        env="test", model_mock=True, allow_test_authorization=allow,
+        audit_backend=AuditBackend.MEMORY, eventbus_backend=EventBusBackend.MEMORY,
+        sandbox_backend=SandboxBackend.NOOP,
+    )
+    audit = AuditLog(MemoryAuditBackend())
+    engine = Engine(
+        settings, audit=audit, event_bus=InMemoryEventBus(),
+        gateway=ModelGateway(settings=settings, provider=MockProvider(), audit=audit),
+        sandbox=FakeSandbox(), registry=default_registry(),
+    )
+    return EngineAdapter(engine)
+
+
+def test_open_for_testing_one_click_when_enabled() -> None:
+    adapter = _adapter_with_test_auth(True)
+    eng = adapter.open_for_testing("acme-001", ["10.5.0.12", "https://juice.local"])
+    assert eng.scope.is_test_authorization
+    assert eng.scope.engagement_id == "eng-acme-001"
+    assert "10.5.0.12/32" in eng.scope.allowed_cidrs
+    assert "juice.local" in eng.scope.allowed_hosts
+    assert adapter.is_open("acme-001")
+
+
+def test_open_for_testing_refused_without_optin() -> None:
+    from attack_engine.errors import AttackEngineError
+
+    adapter = _adapter_with_test_auth(False)
+    with pytest.raises(AttackEngineError, match="not enabled"):
+        adapter.open_for_testing("acme-001", ["10.5.0.12"])
 
 
 def test_recon_intensity_stays_read_only() -> None:
@@ -232,3 +266,205 @@ def test_halt_trips_real_kill_switch(adapter: EngineAdapter) -> None:
     assert adapter.is_halted("acme-002") is False
     adapter.halt("acme-002", by="operator@acme.example")
     assert adapter.is_halted("acme-002") is True
+
+
+# ── governance / lifecycle audit (Slice 1) ────────────────────────────────────
+
+def test_record_governance_lands_on_the_real_chain_before_open(
+    adapter: EngineAdapter,
+) -> None:
+    """Signing a DRAFT engagement (never opened) is still audited, attributed to
+    the real operator, and the hash chain stays valid."""
+
+    adapter.record_governance(
+        "acme-gov", actor="ciso@acme.example", action="roe.signed",
+        payload={"version": 1},
+    )
+    events = adapter.audit_events("acme-gov")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["event_type"] == "roe.signed"
+    assert ev["actor"] == "operator"          # coarse lane the console colours by
+    assert ev["actor_id"] == "ciso@acme.example"  # real identity preserved
+    assert adapter.audit_verify("acme-gov")["valid"] is True
+
+
+def test_governance_events_isolated_per_engagement(adapter: EngineAdapter) -> None:
+    adapter.record_governance("eng-a", actor="op@x", action="engagement.activated")
+    adapter.record_governance("eng-b", actor="op@x", action="engagement.paused")
+    a = [e["event_type"] for e in adapter.audit_events("eng-a")]
+    b = [e["event_type"] for e in adapter.audit_events("eng-b")]
+    assert a == ["engagement.activated"]
+    assert b == ["engagement.paused"]
+
+
+def test_audit_actor_lanes_are_derived_from_action() -> None:
+    from attack_engine.api.serialize import _actor_role
+
+    assert _actor_role("engagement.activated", "op@x") == "operator"
+    assert _actor_role("roe.signed", "op@x") == "operator"
+    assert _actor_role("tool.run", "engine-api-service") == "agent"
+    assert _actor_role("model.call", "engine-api-service") == "agent"
+    assert _actor_role("approval.approved", "boss@x") == "approver"
+    assert _actor_role("something.else", "system") == "system"
+
+
+# ── RoE → Scope mapping completeness (Slice 2) ────────────────────────────────
+
+def test_scope_from_roe_maps_denylist_allowed_tools_and_window_start() -> None:
+    scope = scope_from_roe(
+        "acme-roe",
+        {
+            "scope_allowlist": ["10.5.0.0/24", "app.range"],
+            "scope_denylist": ["10.5.0.5", "fragile.range"],
+            "allowed_tools": ["nmap", "httpx"],
+            "max_intensity": "safe-active",
+            "window_start": "2020-01-01T00:00:00Z",
+            "window_end": "2030-01-01T00:00:00Z",
+        },
+        authorized_by="ciso@acme.example",
+        signature="signed-xyz",
+    )
+    assert "10.5.0.5/32" in scope.denied_cidrs      # bare IP → /32
+    assert "fragile.range" in scope.denied_hosts
+    assert scope.roe.allowed_tools == frozenset({"nmap", "httpx"})
+    assert scope.starts_at is not None
+    assert scope.expires_at is not None
+
+
+# ── remediation lifecycle: propose fix → re-test (Slice 4) ────────────────────
+
+def _open_with_cve_finding(adapter: EngineAdapter) -> tuple[str, str]:
+    scope = scope_from_roe(
+        "rem-eng", {"scope_allowlist": ["10.0.4.0/24"], "max_intensity": "recon"},
+        authorized_by="a", signature="s",
+    )
+    eng = adapter.open(scope)
+    finding = Finding(
+        engagement_id=eng.scope.engagement_id, asset="10.0.4.12",
+        type="CVE-2020-0001", service="vsftpd/2.3.4",
+        state=FindingState.CONFIRMED, priority=Priority.HIGH,
+        reachable=True, exploit_prob=0.8, metadata={"port": 21},
+        verified_by="cve_interval_v1",
+    )
+    eng.store.propose_finding(finding)
+    return "rem-eng", finding.id
+
+
+def test_remediate_proposes_control_and_marks_remediating(adapter: EngineAdapter) -> None:
+    eid, fid = _open_with_cve_finding(adapter)
+    rem = adapter.remediate_finding(fid, actor="op@acme.example")
+    assert rem["finding_id"] == fid
+    assert rem["kind"] in {"patch", "ticket", "config", "mitigation"}
+    # The console now shows the finding as remediating.
+    row = next(f for f in adapter.findings(eid) if f["id"] == fid)
+    assert row["status"] == "remediating"
+    # It is audited on the real chain.
+    actions = [e["event_type"] for e in adapter.audit_events(eid)]
+    assert "finding.remediation_proposed" in actions
+    # Idempotent — re-proposing returns the same remediation.
+    assert adapter.remediate_finding(fid, actor="op@acme.example")["id"] == rem["id"]
+
+
+def test_retest_reruns_check_and_updates_status(adapter: EngineAdapter) -> None:
+    eid, fid = _open_with_cve_finding(adapter)
+    adapter.remediate_finding(fid, actor="op@acme.example")
+    result = adapter.retest_finding(fid, actor="op@acme.example")
+    assert isinstance(result["fixed"], bool)
+    assert result["closed"] == result["fixed"]
+    row = next(f for f in adapter.findings(eid) if f["id"] == fid)
+    assert row["status"] == ("closed" if result["fixed"] else "retest")
+    assert row.get("retest") is not None
+    actions = [e["event_type"] for e in adapter.audit_events(eid)]
+    assert "finding.retest" in actions
+
+
+def test_remediate_unknown_finding_raises(adapter: EngineAdapter) -> None:
+    with pytest.raises(AttackEngineError, match="not found"):
+        adapter.remediate_finding("nope", actor="op@acme.example")
+
+
+# ── CVE cache + refresh (Slice 5) ─────────────────────────────────────────────
+
+def test_cve_cache_returns_loaded_records(adapter: EngineAdapter) -> None:
+    cves = adapter.cve_cache()
+    assert isinstance(cves, list)
+    assert cves, "seed feed should expose at least one CVE"
+    row = cves[0]
+    assert row["cve_id"] == row["id"]
+    for key in ("product", "cvss", "kev", "summary", "exploit_known"):
+        assert key in row
+
+
+def test_refresh_cve_rebuilds_feed_and_audits(adapter: EngineAdapter) -> None:
+    scope = scope_from_roe(
+        "cve-eng", {"scope_allowlist": ["10.0.4.0/24"], "max_intensity": "recon"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    out = adapter.refresh_cve("cve-eng", actor="op@acme.example")
+    assert out["records"] >= 1
+    assert out["source"] in {"files", "seed"}
+    actions = [e["event_type"] for e in adapter.audit_events("cve-eng")]
+    assert "cve.refreshed" in actions
+
+
+# ── model gateway: playground + Red Scope copilot (Slice 7) ───────────────────
+
+def test_model_infer_routes_through_gateway(adapter: EngineAdapter) -> None:
+    out = adapter.model_infer(
+        messages=[{"role": "user", "content": "summarize the recon"}],
+        sensitivity="internal", actor="op@acme.example",
+    )
+    assert out["text"]  # mock provider returns something
+    assert "route" in out
+    assert set(out["usage"]) == {"token_in", "token_out", "latency_ms", "cost"}
+    assert out["redaction_applied"] is False
+
+
+def test_model_infer_sensitive_forces_local(adapter: EngineAdapter) -> None:
+    out = adapter.model_infer(
+        messages=[{"role": "user", "content": "handle this secret"}],
+        sensitivity="sensitive", actor="op@acme.example",
+    )
+    assert out["route"] == "local"          # SEC-05: sensitive pinned local
+    assert out["redaction_applied"] is True
+
+
+def test_red_scope_chat_replies(adapter: EngineAdapter) -> None:
+    out = adapter.red_scope_chat(
+        message="what should I do next?",
+        history=[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+        actor="op@acme.example",
+    )
+    assert isinstance(out["reply"], str) and out["reply"]
+
+
+def test_save_red_scope_agent_returns_id(adapter: EngineAdapter) -> None:
+    agent = adapter.save_red_scope_agent(
+        {"name": "Kerberoast Copilot", "system": "focus on AD"}, actor="op@acme.example"
+    )
+    assert agent["id"]
+    assert agent["name"] == "Kerberoast Copilot"
+    assert agent["created_by"] == "op@acme.example"
+
+
+# ── raw invocation output + honest counts (Slice 8) ───────────────────────────
+
+def test_invocation_raw_returns_sandbox_output(adapter: EngineAdapter) -> None:
+    scope = scope_from_roe(
+        "inv-eng", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "recon"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    adapter.sense("inv-eng", ["10.5.0.10"])
+    invs = adapter.invocations("inv-eng")
+    assert invs, "recon should have produced tool invocations"
+    detail = adapter.invocation_raw(invs[0]["id"])
+    assert detail is not None
+    assert "raw" in detail
+    assert detail["action"].startswith("tool.")
+
+
+def test_invocation_raw_unknown_returns_none(adapter: EngineAdapter) -> None:
+    assert adapter.invocation_raw("does-not-exist") is None

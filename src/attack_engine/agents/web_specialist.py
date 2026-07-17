@@ -474,19 +474,43 @@ class WebGraduator:
         )
 
 
+class _ObserveAndGraduate:
+    """Observer that folds web output into beliefs AND graduates the oracle-ready
+    ones into PROPOSED findings each step — the autonomous "recon → proof" seam.
+
+    Without this the loop only accumulates beliefs; graduation had to be called by
+    hand, so a fully-autonomous run never produced findings for the oracles to
+    confirm. Graduation is idempotent (a graduated hypothesis is linked and no
+    longer re-graduated), so running it every step is safe and cheap.
+    """
+
+    def __init__(
+        self, observer: WebObserver, graduator: WebGraduator, *, min_confidence: float = 0.5
+    ) -> None:
+        self._observer = observer
+        self._graduator = graduator
+        self._min_confidence = min_confidence
+
+    def observe(self, action: ProposedAction, outcome: ActionOutcome, ctx: LoopContext) -> None:
+        self._observer.observe(action, outcome, ctx)
+        self._graduator.graduate(ctx.world_model, min_confidence=self._min_confidence)
+
+
 def build_web_loop(
     ctx: AgentContext,
     *,
     tools: Sequence[str] | None = None,
     tier: ModelTier = ModelTier.FRONTIER,
     max_steps: int = 20,
+    graduate: bool = True,
 ) -> ReasoningLoop:
     """Assemble the Web specialist's reasoning loop from an engagement's services.
 
-    The loop plans with the model gateway, acts through the Tool Runner, and
-    observes web output into the world model as oracle-ready hypotheses. Pair it
-    with a :class:`WebGraduator` to feed the confirmation oracles, and drive it
-    toward a goal with the
+    The loop plans with the model gateway, acts through the Tool Runner, observes
+    web output into the world model as oracle-ready hypotheses, and (by default)
+    graduates the confident, oracle-backed ones into PROPOSED Findings each step —
+    so a caller's :meth:`Engagement.verify` can then confirm them. Drive it toward
+    a goal with the
     :class:`~attack_engine.orchestrator.controller.ObjectiveController`.
     """
 
@@ -500,9 +524,16 @@ def build_web_loop(
         actor_name="web",
         engagement_id=ctx.engagement_id,
     )
+    observer: WebObserver | _ObserveAndGraduate = WebObserver()
+    if graduate:
+        graduator = WebGraduator(
+            ctx.store,
+            synthesizer=PayloadSynthesizer(ctx.gateway, engagement_id=ctx.engagement_id),
+        )
+        observer = _ObserveAndGraduate(WebObserver(), graduator)
     return ReasoningLoop(
         planner,
         ToolRunnerActor(ctx.tool_runner),
-        WebObserver(),
+        observer,
         max_steps=max_steps,
     )

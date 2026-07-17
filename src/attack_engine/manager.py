@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from .engine import Engagement, Engine
 from .errors import AuthorizationError
-from .governance.gates import rbac_responder
+from .governance.gates import Responder, rbac_responder
 from .governance.rbac import AccessControl, Permission, Principal
 from .logging import get_logger
 from .schemas.scope import Scope
@@ -42,6 +42,7 @@ class EngagementManager:
         operator: Principal,
         *,
         approver: Principal | None = None,
+        gate_responder: Responder | None = None,
         require_signed: bool | None = None,
     ) -> Engagement:
         """Open an engagement for ``operator`` (RBAC-checked, audited).
@@ -49,12 +50,15 @@ class EngagementManager:
         ``operator`` must hold ``MANAGE_ENGAGEMENT`` and have access to the
         engagement id. If an ``approver`` principal is given, gates are wired to
         require *that* principal's authorised approval (segregation of duty).
+        A ``gate_responder`` may be supplied directly (e.g. an async approval
+        broker that parks gated actions for a human to approve over HTTP); it
+        takes precedence over the ``approver``-derived RBAC responder.
         """
 
         self._access.check(
             operator, Permission.MANAGE_ENGAGEMENT, engagement_id=scope.engagement_id
         )
-        responder = (
+        responder = gate_responder or (
             rbac_responder(self._access, approver) if approver is not None else None
         )
         engagement = self._engine.engagement(

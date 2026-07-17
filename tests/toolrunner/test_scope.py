@@ -32,6 +32,29 @@ class TestInScope:
         assert enf.allows("juice.local.")  # trailing dot tolerated
 
 
+class TestUrlAndPortNormalization:
+    """A URL or host:port target is checked by its host (tools accept the full URL)."""
+
+    def test_url_target_allowed_by_host(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("http://10.0.4.12/mutillidae/index.php?page=x")
+        assert enf.allows("https://juice.local/rest/products")
+
+    def test_host_with_port_allowed_by_host(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert enf.allows("10.0.4.12:8080")
+        assert enf.allows("juice.local:3000")
+
+    def test_url_out_of_scope_still_refused(self, scope: Scope) -> None:
+        enf = ScopeEnforcer(scope)
+        assert not enf.allows("http://8.8.8.8/x")
+
+    def test_userinfo_trick_uses_real_host_not_widened(self, scope: Scope) -> None:
+        # http://<allowed>@<evil> must be judged by the REAL host (evil), refused.
+        enf = ScopeEnforcer(scope)
+        assert not enf.allows("http://10.0.4.12@evil.example.com/")
+
+
 class TestOutOfScope:
     def test_ip_outside_all_cidrs(self, scope: Scope) -> None:
         enf = ScopeEnforcer(scope)
@@ -166,3 +189,56 @@ class TestCidrSweep:
         enf = ScopeEnforcer(scope)
         with pytest.raises(ScopeViolationError):
             enf.check("10.0.0.0/8")
+
+
+# ── denylist + authorized-window enforcement (Slice 2: RoE really drives) ──────
+
+from datetime import timedelta  # noqa: E402
+
+from attack_engine.schemas.scope import RulesOfEngagement  # noqa: E402
+
+
+def _scope_with(**kw: object) -> Scope:
+    base: dict[str, object] = {
+        "engagement_id": "eng-deny-0001",
+        "allowed_cidrs": ("10.0.4.0/24",),
+        "allowed_hosts": ("app.range",),
+        "roe": RulesOfEngagement(),
+        "authorized_by": "t@8pi.ai",
+        "signature": "sig",
+    }
+    base.update(kw)
+    return Scope(**base)  # type: ignore[arg-type]
+
+
+class TestDenylist:
+    def test_denied_ip_carved_out_of_allowed_range(self) -> None:
+        enf = ScopeEnforcer(_scope_with(denied_cidrs=("10.0.4.5/32",)))
+        assert enf.allows("10.0.4.12")          # still allowed
+        assert not enf.allows("10.0.4.5")       # denylist wins over allowlist
+        with pytest.raises(ScopeViolationError, match="explicitly denied"):
+            enf.check("10.0.4.5")
+
+    def test_denied_host(self) -> None:
+        enf = ScopeEnforcer(_scope_with(denied_hosts=("app.range",)))
+        assert not enf.allows("app.range")
+        with pytest.raises(ScopeViolationError, match="explicitly denied"):
+            enf.check("http://app.range/login")  # normalized to host, then denied
+
+    def test_denied_subnet_blocks_sweep(self) -> None:
+        enf = ScopeEnforcer(_scope_with(denied_cidrs=("10.0.4.0/28",)))
+        assert not enf.allows("10.0.4.0/28")    # sweep overlapping a denied net
+        assert not enf.allows("10.0.4.3")
+
+
+class TestAuthorizedWindow:
+    def test_scope_not_yet_active_is_refused(self) -> None:
+        future = utcnow() + timedelta(hours=1)
+        enf = ScopeEnforcer(_scope_with(starts_at=future))
+        with pytest.raises(ScopeViolationError, match="not yet"):
+            enf.check("10.0.4.12")
+
+    def test_scope_active_after_start(self) -> None:
+        past = utcnow() - timedelta(hours=1)
+        enf = ScopeEnforcer(_scope_with(starts_at=past))
+        enf.check("10.0.4.12")  # no raise

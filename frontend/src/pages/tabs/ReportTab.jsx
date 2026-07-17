@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { FileText, FileHtml, FilePdf, Code, ShieldCheck } from "@phosphor-icons/react";
+import { FileHtml, FilePdf, Code, ShieldCheck } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, KV, PreviewNotice } from "../../components/ui";
@@ -24,7 +24,7 @@ export default function ReportTab({ eid }) {
 
   return (
     <div className="space-y-6">
-      <SectionTitle sub="Purple-team deliverable — scope, inventory, risk map, findings, remediation & re-test proof (C-10). Reproducible from the audit log."
+      <SectionTitle sub="Offensive engagement deliverable — scope, inventory, risk map, findings, remediation & re-test proof (C-10). Reproducible from the audit log."
         right={
           <div className="flex gap-2">
             <Btn variant="dark" icon={FileHtml} onClick={() => window.open(api.reportHtmlUrl(eid), "_blank")} data-testid="report-html-btn">HTML</Btn>

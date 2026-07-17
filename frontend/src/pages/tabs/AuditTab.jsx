@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { ShieldCheck, ShieldSlash, ListDashes } from "@phosphor-icons/react";
+import { ShieldCheck, ShieldSlash } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
-import { timeAgo } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Select } from "../../components/ui";
 
 const ACTOR_COLOR = { operator: "#B4B4B4", agent: "#B4B4B4", approver: "#FFFFFF", system: "#7A7A7A" };
@@ -14,17 +13,21 @@ export default function AuditTab({ eid }) {
 
   const load = useCallback(async () => {
     const [ev, v] = await Promise.all([
-      api.audit(eid, { event_type: ftype || undefined, actor: factor || undefined }),
+      api.audit(eid, {}),
       api.auditVerify(eid),
     ]);
     setEvents(ev);
     setVerify(v);
-  }, [eid, ftype, factor]);
+  }, [eid]);
   useEffect(() => { load(); }, [load]);
 
   if (!events) return <Loading label="Loading audit chain" />;
 
-  const eventTypes = Array.from(new Set(events.map((e) => e.event_type)));
+  // Filter client-side so both dropdowns always list the full set of options.
+  const eventTypes = Array.from(new Set(events.map((e) => e.event_type))).sort();
+  const shown = events.filter(
+    (e) => (!ftype || e.event_type === ftype) && (!factor || e.actor === factor)
+  );
 
   return (
     <div>
@@ -58,17 +61,17 @@ export default function AuditTab({ eid }) {
 
       <Panel className="bg-black p-0 overflow-hidden">
         <div className="max-h-[560px] overflow-y-auto p-4 mono text-xs leading-relaxed">
-          {events.map((e) => (
+          {shown.map((e) => (
             <div key={e.id} className="flex flex-wrap items-baseline gap-x-2 py-1 border-b border-white/5 last:border-0" data-testid={`audit-event-${e.seq}`}>
               <span className="text-muted w-10">#{e.seq}</span>
               <span className="text-neutral">{new Date(e.ts).toLocaleTimeString()}</span>
-              <span style={{ color: ACTOR_COLOR[e.actor] || "#fff" }}>[{e.actor}:{e.actor_id}]</span>
+              <span style={{ color: ACTOR_COLOR[e.actor] || "#fff" }} title={e.actor_id}>[{e.actor}:{e.actor_id}]</span>
               <span className="text-white font-semibold">{e.event_type}</span>
               <span className="text-white/70 truncate max-w-[280px]">{JSON.stringify(e.payload)}</span>
               <span className="ml-auto text-muted/60" title={`hash ${e.hash}\nprev ${e.prev_hash}`}>↳ {e.hash.slice(0, 10)}</span>
             </div>
           ))}
-          {events.length === 0 && <div className="text-muted py-6 text-center">No audit events match the filter.</div>}
+          {shown.length === 0 && <div className="text-muted py-6 text-center">No audit events match the filter.</div>}
         </div>
       </Panel>
       <div className="text-[11px] text-muted mono mt-2">

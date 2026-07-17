@@ -15,9 +15,30 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Callable
+from urllib.parse import urlparse
 
 from ..errors import ScopeViolationError
 from ..schemas.scope import Scope
+
+
+def _bare_target(target: str) -> str:
+    """Reduce a URL or ``host:port`` to the bare host/IP we actually contact.
+
+    Tools accept a full URL target (their ``_url`` helper passes it through), but
+    the scope allowlist is about *which host* we may reach — so ``http://h/x`` and
+    ``h:8080`` must be checked as ``h``. ``urlparse().hostname`` also defuses the
+    ``http://allowed@evil`` userinfo trick (it returns the real host, ``evil``),
+    so normalization never widens scope. CIDRs and bare IPv6 are left untouched.
+    """
+
+    if "://" in target:
+        return urlparse(target).hostname or target
+    # host:port (a single colon, not a CIDR, not bare IPv6) → drop the port.
+    if target.count(":") == 1 and "/" not in target:
+        host, _, port = target.partition(":")
+        if port.isdigit():
+            return host
+    return target
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -125,6 +146,11 @@ class ScopeEnforcer:
         self._v4 = _RadixTrie(bit_width=32)
         self._v6 = _RadixTrie(bit_width=128)
         self._hosts: frozenset[str] = frozenset(scope.allowed_hosts)
+        # Denylist tries (deny wins over allow) — a target carved out of an
+        # otherwise-allowed range is refused before any tool runs.
+        self._deny_v4 = _RadixTrie(bit_width=32)
+        self._deny_v6 = _RadixTrie(bit_width=128)
+        self._denied_hosts: frozenset[str] = frozenset(scope.denied_hosts)
 
         for cidr in scope.allowed_cidrs:
             net = ipaddress.ip_network(cidr, strict=False)
@@ -132,6 +158,12 @@ class ScopeEnforcer:
                 self._v4.insert(net)
             else:
                 self._v6.insert(net)
+        for cidr in scope.denied_cidrs:
+            net = ipaddress.ip_network(cidr, strict=False)
+            if isinstance(net, ipaddress.IPv4Network):
+                self._deny_v4.insert(net)
+            else:
+                self._deny_v6.insert(net)
 
     @property
     def scope(self) -> Scope:
@@ -154,11 +186,40 @@ class ScopeEnforcer:
             return all(self._ip_allowed(ipaddress.ip_address(a)) for a in resolved)
         return False
 
+    def _is_denied(self, target: str) -> bool:
+        """True if ``target`` (already bare-normalized) matches the denylist."""
+
+        if not self._denied_hosts and len(self._deny_v4) == 0 and len(self._deny_v6) == 0:
+            return False
+        if "/" in target:
+            try:
+                net = ipaddress.ip_network(target, strict=False)
+            except ValueError:
+                return target.lower().rstrip(".") in self._denied_hosts
+            # A sweep is denied if it overlaps any denied network at all.
+            trie = self._deny_v4 if isinstance(net, ipaddress.IPv4Network) else self._deny_v6
+            return trie.contains_network(net) or trie.contains(net.network_address)
+        try:
+            ip = ipaddress.ip_address(target)
+        except ValueError:
+            return target.lower().rstrip(".") in self._denied_hosts
+        trie = self._deny_v4 if isinstance(ip, ipaddress.IPv4Address) else self._deny_v6
+        return trie.contains(ip)
+
     def allows(self, target: str) -> bool:
         """Return whether ``target`` (IP, CIDR range, or hostname) is in scope."""
 
         target = target.strip()
         if not target:
+            return False
+        # Normalize a URL / host:port to the bare host/IP we actually contact, so
+        # a planner that passes "http://h/path" isn't spuriously refused (the tool
+        # wrappers accept the full URL; the allowlist only cares about the host).
+        target = _bare_target(target)
+        if not target:
+            return False
+        # Denylist wins over the allowlist.
+        if self._is_denied(target):
             return False
         # A CIDR sweep (e.g. "10.5.0.0/24") — in scope iff fully contained in an
         # allow-listed CIDR. Recon legitimately scans a whole authorized range.
@@ -181,8 +242,14 @@ class ScopeEnforcer:
         This is the call the Tool Runner makes *first*, before anything else.
         """
 
+        if self._scope.is_not_yet_active():
+            raise ScopeViolationError(
+                target, reason="engagement scope not yet in its authorized window"
+            )
         if self._scope.is_expired():
             raise ScopeViolationError(target, reason="engagement scope expired")
+        if self._is_denied(_bare_target(target.strip())):
+            raise ScopeViolationError(target, reason="target explicitly denied by RoE")
         if not self.allows(target):
             raise ScopeViolationError(target, reason="target not in allowlist")
 

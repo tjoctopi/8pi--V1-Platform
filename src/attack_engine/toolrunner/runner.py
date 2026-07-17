@@ -141,6 +141,11 @@ class ToolRunner:
             self._refuse(tool, target, "forbidden_tool", "tool in RoE denylist")
             raise RoEViolationError(tool, "tool in RoE denylist")
 
+        # 2b. RoE: if the engagement declares a tool allowlist, only listed tools run.
+        if not self._roe.is_tool_allowed(tool):
+            self._refuse(tool, target, "not_in_allowlist", "tool not in RoE allowlist")
+            raise RoEViolationError(tool, "tool not in RoE allowlist")
+
         # 3. Resolve the wrapper (raises ToolNotRegisteredError if unknown).
         wrapper = self._registry.resolve(tool)
 

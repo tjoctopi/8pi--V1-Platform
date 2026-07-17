@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps -- intentional effect deps; preserved behavior */
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -5,9 +6,8 @@ import {
   FloppyDisk, Crosshair, Skull, Plus, X,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
-import { timeAgo } from "../lib/theme";
 import {
-  Panel, Btn, Badge, Loading, Empty, TextInput, Select, PreviewNotice, useToast, errMsg, IncidentText, Spinner,
+  Panel, Btn, Badge, Loading, TextInput, Select, PreviewNotice, useToast, errMsg, IncidentText, Spinner,
 } from "../components/ui";
 
 const ALL_TOOLS = ["nmap", "nikto", "dirbust", "wpscan", "sqlmap"];

@@ -5,8 +5,8 @@ import {
   ArrowLeft, Warning, Play, Target,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
-import { STATUS, SEV } from "../lib/theme";
-import { Panel, Btn, Badge, Dot, Tabs, Loading, Modal, useToast, errMsg, TextInput } from "../components/ui";
+import { STATUS } from "../lib/theme";
+import { Btn, Badge, Dot, Tabs, Loading, Modal, useToast, errMsg, TextInput } from "../components/ui";
 
 import OverviewTab from "./tabs/OverviewTab";
 import RoeTab from "./tabs/RoeTab";
@@ -100,7 +100,7 @@ export default function EngagementDetail() {
                 {e.halted && <Badge color="#FF00A0" dot>HALTED</Badge>}
               </div>
               <h1 className="h-font text-3xl sm:text-4xl font-black uppercase tracking-tighter text-white leading-none">{e.name}</h1>
-              <div className="text-xs text-muted mono mt-1.5">ENG {e.id.slice(0, 12)} · estate {e.estate_id}</div>
+              <div className="text-xs text-muted mono mt-1.5">ENG {e.id.slice(0, 12)} · estate {e.estate?.id || "—"}</div>
             </div>
             <div className="flex items-center gap-2">
               {e.halted ? (
