@@ -20,6 +20,13 @@ from __future__ import annotations
 
 from .backend import C2Backend, MockC2Backend
 from .foothold import Foothold, FootholdRunner
+from .lateral import (
+    LateralBackend,
+    LateralClient,
+    LateralMovementLauncher,
+    LateralProtocol,
+    lateral_backend,
+)
 from .msf import MsfFootholdLauncher, MsfRpcBackend, MsfRpcClient
 from .postex import PostExOperator, PostExReport, PostExResult
 from .session import Listener, Session, SessionKind, SessionManager, SessionStatus
@@ -31,6 +38,11 @@ __all__ = [
     "MockC2Backend",
     "Foothold",
     "FootholdRunner",
+    "LateralBackend",
+    "LateralClient",
+    "LateralMovementLauncher",
+    "LateralProtocol",
+    "lateral_backend",
     "MsfRpcBackend",
     "MsfRpcClient",
     "MsfFootholdLauncher",

@@ -39,6 +39,15 @@ class ADEdgeType(str, Enum):
     ADD_MEMBER = "AddMember"
     CAN_RDP = "CanRDP"
     CAN_PSREMOTE = "CanPSRemote"
+    # --- domain-takeover primitives (Phase E depth) ---
+    OWNS = "Owns"                                    # object ownership → grant self rights
+    DCSYNC = "DCSync"                                # replicate secrets → all hashes
+    ADD_KEY_CREDENTIAL_LINK = "AddKeyCredentialLink"  # shadow credentials
+    ALLOWED_TO_DELEGATE = "AllowedToDelegate"        # constrained delegation (S4U2Proxy)
+    ALLOWED_TO_ACT = "AllowedToAct"                  # resource-based constrained delegation
+    ADCS_ESC1 = "ADCSESC1"                           # enroll a cert as any principal
+    ADCS_ESC8 = "ADCSESC8"                           # NTLM relay to AD CS web enrollment
+    SQL_ADMIN = "SQLAdmin"                           # MSSQL admin → xp_cmdshell
 
 
 #: Per-edge ATT&CK technique + traversal cost. MemberOf is free (already implied
@@ -56,6 +65,14 @@ _EDGE_META: dict[ADEdgeType, tuple[str, float]] = {
     ADEdgeType.ADD_MEMBER: ("T1098", 1.0),
     ADEdgeType.CAN_RDP: ("T1021.001", 1.0),          # Remote Desktop
     ADEdgeType.CAN_PSREMOTE: ("T1021.006", 1.0),     # PowerShell Remoting
+    ADEdgeType.OWNS: ("T1098", 1.0),
+    ADEdgeType.DCSYNC: ("T1003.006", 1.0),           # DCSync (replicate secrets)
+    ADEdgeType.ADD_KEY_CREDENTIAL_LINK: ("T1556", 1.0),  # Shadow Credentials
+    ADEdgeType.ALLOWED_TO_DELEGATE: ("T1558.003", 1.5),  # Kerberoasting/constrained deleg.
+    ADEdgeType.ALLOWED_TO_ACT: ("T1558", 1.5),       # RBCD
+    ADEdgeType.ADCS_ESC1: ("T1649", 1.0),            # Steal/Forge Certificates
+    ADEdgeType.ADCS_ESC8: ("T1649", 1.5),
+    ADEdgeType.SQL_ADMIN: ("T1210", 1.0),
 }
 
 #: High-value groups whose membership means domain takeover.
@@ -100,7 +117,10 @@ class ADGraph:
 
     def add_principal(self, name: str, kind: PrincipalKind, *, high_value: bool = False) -> str:
         key = name.strip().upper()
-        hv = high_value or any(g in name.lower() for g in _HIGH_VALUE_GROUPS)
+        # A DOMAIN object is a crown jewel: controlling it (DCSync / GenericAll on
+        # the domain) is domain takeover, so it is high-value by definition.
+        hv = (high_value or kind is PrincipalKind.DOMAIN
+              or any(g in name.lower() for g in _HIGH_VALUE_GROUPS))
         if self._g.has_node(key):
             if hv:
                 self._g.nodes[key]["high_value"] = True
@@ -119,6 +139,26 @@ class ADGraph:
 
     def high_value_targets(self) -> list[str]:
         return [n for n, a in self._g.nodes(data=True) if a.get("high_value")]
+
+    def mark_roastable(self, name: str, *, asrep: bool = False) -> str:
+        """Flag a principal as Kerberoastable / AS-REP-roastable — a credential
+        lead: an authenticated attacker can request its ticket and crack it
+        offline to *become* it (the crack itself is the credential lifecycle)."""
+
+        key = self.add_principal(name, PrincipalKind.USER)
+        self._g.nodes[key]["asrep_roastable" if asrep else "kerberoastable"] = True
+        return key
+
+    def roastable(self) -> list[dict[str, str]]:
+        """Roastable principals and which technique acquires their credential."""
+
+        out: list[dict[str, str]] = []
+        for n, a in self._g.nodes(data=True):
+            if a.get("kerberoastable"):
+                out.append({"principal": n, "technique": "kerberoast", "attack": "T1558.003"})
+            if a.get("asrep_roastable"):
+                out.append({"principal": n, "technique": "asrep", "attack": "T1558.004"})
+        return out
 
     def attack_paths(
         self, owned: list[str], targets: list[str] | None = None

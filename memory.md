@@ -149,6 +149,102 @@ _Last updated: 2026-07-16_
 - **Next candidates:** Phase E (AD/lateral), remaining Phase D depth (auth/session, more oracles), or close the
   live-range gates — user to steer.
 
+## 2026-07-17 — Phase E started (Identity/AD) on branch `feat/phase-e-identity-ad`
+- Branched off the A–D tip (`feat/gateway-v2-structured-output`, PR #12 open into dev) so E builds on A–D.
+- **E1 enriched abuse graph** (`ad/graph.py` + `ad/collect.py`): added domain-takeover edge types (DCSync,
+  AllowedToDelegate, AllowedToAct, AddKeyCredentialLink, Owns, ADCSESC1/ESC8, SQLAdmin) with ATT&CK+cost;
+  DOMAIN-kind principals auto high-value; Kerberoast/AS-REP = credential leads via `mark_roastable`/`roastable()`
+  (not free edges). `from_bloodhound`'s existing `aces` right-name path handles the new ACL edges automatically;
+  added `domains`/`kerberoastable`/`asrep_roastable` keys. Proven: realistic collection → foothold→DA path.
+- **E2 Identity specialist** (`agents/identity_specialist.py`): `ADObserver` (bloodhound data → graph + `ad-path`
+  belief; kerberoast → `ad-credential` lead + roastable flag; `ingest_collection` is the tested entry),
+  `build_identity_loop` mirrors recon/web. WorldModel gained `ad_graph`/`set_ad_graph`/`mark_owned`/
+  `owned_principals`/`domain_admin_paths` (lazy ADGraph, TYPE_CHECKING import to avoid layering weight).
+  New `DomainAdminObjective` (orchestrator/objective.py) fires when a path to a high-value target exists.
+- **Green: 637 tests, ruff+mypy clean (167 src files).** Uncommitted → will commit on the E branch.
+- **GATE MET LIVE (2026-07-17): foothold → Domain Admin on a real AD forest.** Stood up Samba-AD DC image
+  `diegogslomp/samba-ad-dc` as `ae-dc` (CORP.LOCAL, 10.5.0.20 on range net, `--privileged` for sysvol NT-ACLs,
+  REALM/DOMAIN/ADMIN_PASS/DNS_FORWARDER env). **Gotcha:** it auto-bound samba to `gretap0`/loopback → edit
+  smb.conf `interfaces = lo eth0` + `bind interfaces only = no`, restart. Provisioned alice (low-priv foothold),
+  svc_sql (SPN/kerberoastable), and granted alice `GenericAll` on Domain Admins via `samba-tool dsacl set`
+  (also granted DCSync via the two replication GUID CRs). **Live compromise:** alice added herself to Domain
+  Admins over LDAP (bloodyAD, range-attached container) — verified before/after membership. **Engine side:**
+  ADObserver.ingest_collection → abuse graph found ALICE→GenericAll→DOMAIN ADMINS, DomainAdminObjective fired.
+  Scripts/infra in scratchpad; images `ae-attacker`(impacket+bloodhound), `ae-attacker11/12`, `ae-bloodyad`.
+- **Tooling reality (important for next time):** host (macOS Docker Desktop) CANNOT reach range container IPs
+  (10.5.0.x) directly → AD tools must run in range-attached containers (like the sandbox does), not the venv.
+  impacket DRSUAPI DCSync FAILED against this Samba (`byte indices...`/`ERROR_SUCCESS` parse bugs across
+  0.11/0.12/0.13) — a protocol-parse incompat, NOT authorization. bloodhound-python collection also failed on
+  Samba LDAP (`server.info None`). Reliable executable primitive = LDAP ACL-abuse via bloodyAD. Kerberoast SPN
+  enumerated but TGS had KRB_AP_ERR_INAPP_CKSUM. So: prefer bloodyAD/ldap for Samba; DCSync/collection need
+  tooling work or a Windows DC. See [[8pi-live-range-available]].
+- **Remaining Phase-E depth (not gate-blocking):** wrap impacket/certipy/bloodyAD/bloodhound-python as
+  first-class sandboxed engine tools + sandbox file-artifact retrieval; E4 real lateral execution
+  (wmiexec/psexec/winrm over C2 SOCKS) + on-wire credential reuse (PtH/PtT) for multi-host forests.
+
+## 2026-07-17 — Phase E3 (credential lifecycle) built + proven on branch `feat/phase-e-identity-ad`
+- **New `credentials/` package** (schema + vault + cracker + manager), the capture→crack→own→escalate lifecycle:
+  - `schemas/credentials.py` — `Credential` (metadata only: opaque `secret_ref` + masked preview; the raw
+    secret NEVER lives in the model), `SecretKind` (plaintext/nt_hash/aes_key/ticket/kerberos_tgs/kerberos_asrep),
+    `CredentialState` (captured/cracked/validated). `is_reusable` = hash/key/ticket (PtH/PtT); roast kinds aren't.
+  - `credentials/vault.py` — `CredentialVault`: in-memory store, opaque `vault-…` refs, `mask()` previews, never
+    logs raw. The one chokepoint holding material (data-min rule §6/§8).
+  - `credentials/cracker.py` — `HashCracker`: **real** offline crypto. `crack_nt` (MD4 utf-16-le over a wordlist);
+    `crack_kerberos` (RC4-HMAC per RFC 4757: K1=HMAC-MD5(nt,usageLE), K3=HMAC-MD5(K1,checksum), RC4 decrypt,
+    verify HMAC — TGS-REP usage 2 / AS-REP usage 8; auto-detects format). `nt_hash()` + `principal_of()` helpers.
+    **Validated against genuine impacket-encrypted tickets** (independent impl) — TGS/AS-REP/NT all crack, neg
+    control fails. Only stdlib + pycryptodome (ships via impacket) so it runs in the zero-service test suite.
+  - `credentials/manager.py` — `CredentialManager`: governed `capture` (→ vault + Credential, audited, no
+    material in payload), `crack` (offline → mints reusable PLAINTEXT cred, audits success/failure with try-count
+    only), `own` (marks principal owned in the WorldModel → `domain_admin_paths()` re-plans → fresh DA path).
+    Never touches the wire; on-wire reuse (PtH) is E4/FootholdRunner under a gate.
+- **Wired into the loop:** `kerberoast` wrapper `parse` now emits `hashes` (roast blobs) + `accounts`
+  (parsed principals). `ADObserver(cred_manager=…, wordlist=…)` (opt-in, backward-compatible) runs
+  capture→crack→own on roasted tickets and re-surfaces paths. `principal_of` made public in the wrapper.
+- **Green: 665 passed, 3 integration skips; ruff+mypy clean (172 src files).** +28 tests (credentials/ +
+  identity-specialist wiring + kerberoast wrapper).
+- **PROVEN engine-driven on the live DC account (2026-07-17):** set `svc_sql@corp.local` password on the running
+  `ae-dc`, forged a GENUINE `$krb5tgs$` (impacket RC4-HMAC keyed by svc_sql's real NT hash), ran it through the
+  engine → cracked back to the real password → owned svc_sql → path `SVC_SQL→[GenericAll]→DOMAIN ADMINS` surfaced;
+  3 hash-chained audit entries, `audit.verify()` True, no secret in payloads. Script: scratchpad/e3_live_proof.py.
+- **Live-range caveat reproduced (as memory predicted):** impacket's on-wire ticket *request* vs this Samba build
+  fails — Kerberoast TGS = `KRB_AP_ERR_INAPP_CKSUM`, AS-REP request rejected by the KDC even with
+  DONT_REQ_PREAUTH set (restarted DC, LDAP showed the flag, KDC still required preauth). Kerberoast *enumeration*
+  over LDAP works (found `MSSQLSvc/db.corp.local:1433`). So ticket *extraction* needs a Windows DC or tooling
+  work; the crack rung is cryptographically real regardless. Reverted svc_sql UAC to 66048 (normal SPN account).
+- **PR reminder (user ask):** commit on `feat/phase-e-identity-ad`; open the PR into `dev` when Phase E wraps so
+  E1–E3 (and E4) land on the deployed version. Pull latest `dev` + rebase before the PR.
+
+## 2026-07-17 — Phase E4 (real lateral execution) built + proven; Phase E COMPLETE
+- **New `c2/lateral.py`** — credential reuse (PtH/PtT/valid creds) → proven session on a NEW host, mirroring the
+  msf/sliver backend pattern:
+  - `LateralClient` (Protocol: open/run/alive/close — the auth+exec surface); real `ImpacketLateralClient`
+    (`# pragma: no cover`, integration-only) runs `impacket-wmiexec/psexec/smbexec` one-shot with PtH (`-hashes
+    :<nt>`), PtT (`-k -no-pass` + KRB5CCNAME), or plaintext; opaque in-memory handle table keeps the secret out
+    of argv that could be logged externally.
+  - `LateralBackend` (a `C2Backend` routed by `lateral_handle` in Session.metadata) — so the EXISTING
+    `FootholdRunner` opens/proves/tears-down the lateral session (scope/gate/audit/kill-switch unchanged).
+  - `LateralMovementLauncher.move(host, credential, *, protocol, world_model)` — guards `is_reusable` (refuses an
+    uncracked roast blob), resolves technique (NT_HASH→T1550.002 PtH, TICKET/AES→T1550.003 PtT, PLAINTEXT→T1021),
+    reads the secret from the vault ONLY at use (in-memory, never audited), `client.open` → `runner.establish`
+    (technique-tagged) → marks principal owned so the graph re-plans from the new host.
+  - `Engagement.lateral(client, vault)` factory wires it over the engagement's FootholdRunner+SessionManager.
+    Exported from `c2` (LateralBackend/LateralClient/LateralMovementLauncher/LateralProtocol/lateral_backend).
+- **Green: 676 passed, 3 integration skips; ruff+mypy clean (173 src files).** +21 tests (tests/c2/test_lateral.py
+  + engine `test_engagement_lateral_factory`). Deploy-safe: no new runtime dep (impacket lazy/integration-only,
+  subprocess stdlib); verified `attack_engine.c2` + `attack_engine.api.app` import chain boots clean.
+- **PROVEN LIVE (2026-07-17):** real `LateralMovementLauncher`/`FootholdRunner`/`SessionManager`/`AuditLog` vs
+  reachable Metasploitable (10.5.0.12): owned NT-hash cred → authorized T1550.002 (PtH) → tracked session →
+  PROVED with real remote output (whoami=root, real id, hostname=56d5de11048d) → 5-entry hash-chained audit
+  verify()=True, no secret in payloads → kill-switch teardown released session + transport. Script:
+  scratchpad/e4_live_proof.py.
+- **Honest caveat:** the live exec transport was a real-command stand-in (`docker exec`) because THIS range has
+  no Windows member server for true wmiexec/psexec PtH; the PtH/PtT auth path is unit-tested and the impacket
+  client is integration-only (same posture as Sliver/msfrpc). To run on-wire PtH: add a Windows member host.
+- **Phase E COMPLETE (E1 abuse graph, E2 identity specialist, E3 credential lifecycle, E4 lateral execution).**
+  Gate (foothold→Domain Admin) met live; the one carry-forward is native-tool wrapping as first-class sandboxed
+  engine tools + a Windows member host. **Next: open the PR `feat/phase-e-identity-ad` → `dev`.**
+
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
   offensive platform — **full adversary emulation** (external web → internal network → AD →

@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 import yaml
 
 if TYPE_CHECKING:
+    from .c2.lateral import LateralClient, LateralMovementLauncher
+    from .credentials.vault import CredentialVault
     from .exploit.runner import ExploitReport
     from .killchain.plan import KillChainPlan
     from .knowledge.graph_backend import GraphBackend
@@ -249,6 +251,24 @@ class Engagement:
             self.session_manager, backend, self.scope, self.audit,
             gate=self.context.gate, kill_switch=self.kill_switch,
         )
+
+    def lateral(
+        self, client: LateralClient, vault: CredentialVault
+    ) -> LateralMovementLauncher:
+        """Lateral-movement launcher (E4) — reuse an owned credential to land a
+        proven session on a new host via PtH / PtT / valid accounts.
+
+        Wires a governed :class:`~attack_engine.c2.foothold.FootholdRunner` over a
+        :class:`~attack_engine.c2.lateral.LateralBackend`, so the credential-reuse
+        foothold is authorized (technique-tagged), scope-bound, kill-switchable,
+        and audited exactly like any other. ``vault`` is the credential vault the
+        secret material is read from at the moment of use (never audited).
+        """
+
+        from .c2.lateral import LateralBackend, LateralMovementLauncher
+
+        runner = self.foothold(LateralBackend(client))
+        return LateralMovementLauncher(runner, client, vault)
 
     def orchestrator(self, *, blue_sentry: BlueSentry | None = None) -> Orchestrator:
         """Build an Orchestrator bound to this engagement (drives the full loop)."""

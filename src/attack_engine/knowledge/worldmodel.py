@@ -20,8 +20,12 @@ Finding (which then runs propose→verify→confirm) via :meth:`link_finding`
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING, Any
 
 from ..logging import get_logger
+
+if TYPE_CHECKING:
+    from ..ad.graph import ADAttackPath, ADGraph
 from ..schemas.beliefs import Hypothesis, HypothesisStatus, Observation
 from ..schemas.chains import AttackChain
 from ..schemas.common import utcnow
@@ -39,6 +43,8 @@ class WorldModel:
         self._store = store
         self._hypotheses: dict[str, Hypothesis] = {}
         self._chains: dict[str, AttackChain] = {}
+        self._ad_graph: Any = None  # lazily-built ADGraph (identity attack graph)
+        self._owned: set[str] = set()  # principals the fleet currently controls
         self._lock = threading.RLock()
 
     @property
@@ -184,6 +190,42 @@ class WorldModel:
     def chains(self) -> list[AttackChain]:
         with self._lock:
             return list(self._chains.values())
+
+    # --- identity / AD attack graph -------------------------------------------
+
+    @property
+    def ad_graph(self) -> ADGraph:
+        """The identity attack graph (lazily created), shared across the fleet."""
+
+        if self._ad_graph is None:
+            from ..ad.graph import ADGraph
+            self._ad_graph = ADGraph()
+        return self._ad_graph  # type: ignore[no-any-return]
+
+    def set_ad_graph(self, graph: ADGraph) -> None:
+        """Replace the identity attack graph (e.g. after a fresh collection)."""
+
+        with self._lock:
+            self._ad_graph = graph
+
+    def mark_owned(self, principal: str) -> None:
+        """Record a principal the fleet now controls (a foothold identity)."""
+
+        with self._lock:
+            self._owned.add(principal.strip().upper())
+
+    @property
+    def owned_principals(self) -> list[str]:
+        with self._lock:
+            return sorted(self._owned)
+
+    def domain_admin_paths(self) -> list[ADAttackPath]:
+        """Known identity attack paths from an owned principal to a high-value
+        target (Domain Admins / the domain object). Empty until one exists."""
+
+        if self._ad_graph is None or not self._owned:
+            return []
+        return self.ad_graph.attack_paths(self.owned_principals)
 
     # --- planner query API ----------------------------------------------------
 

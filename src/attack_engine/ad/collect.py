@@ -20,14 +20,26 @@ def from_bloodhound(data: dict[str, Any]) -> ADGraph:
     Expected shape (all keys optional)::
 
         {
+          "domains":  [{"name": "CORP.LOCAL"}],
           "users":    [{"name": "...", "high_value": false}],
           "groups":   [{"name": "...", "members": ["..."]}],
           "computers":[{"name": "...", "local_admins": ["..."], "sessions": ["..."]}],
           "aces":     [{"principal": "...", "target": "...", "right": "GenericAll"}],
+          # ACL/right names in `aces` also cover the domain-takeover primitives:
+          #   DCSync · Owns · AddKeyCredentialLink · AllowedToDelegate ·
+          #   AllowedToAct · ADCSESC1 · ADCSESC8 · SQLAdmin
+          "kerberoastable": ["svc@corp"],   # has an SPN → request + crack its TGS
+          "asrep_roastable": ["noauth@corp"] # no pre-auth → request + crack its AS-REP
         }
+
+    Kerberoastable / AS-REP entries are recorded as *credential leads* (flags),
+    not free graph edges — acquiring them requires cracking (the credential
+    lifecycle), so they are surfaced for the planner rather than auto-traversed.
     """
 
     g = ADGraph()
+    for dom in data.get("domains", []):
+        g.add_principal(dom["name"], PrincipalKind.DOMAIN, high_value=True)
     for u in data.get("users", []):
         g.add_principal(u["name"], PrincipalKind.USER, high_value=bool(u.get("high_value")))
     for grp in data.get("groups", []):
@@ -48,4 +60,8 @@ def from_bloodhound(data: dict[str, Any]) -> ADGraph:
         except (ValueError, KeyError):
             continue  # unknown/unsupported right → skip (extensible)
         g.add_edge(ace["principal"], ace["target"], edge_type)
+    for name in data.get("kerberoastable", []):
+        g.mark_roastable(name)
+    for name in data.get("asrep_roastable", []):
+        g.mark_roastable(name, asrep=True)
     return g
