@@ -18,13 +18,24 @@ module "network" {
   tags               = local.tags
 }
 
-# ──────────────── security group (no inbound; SSM-only) ────────────────
+# ──────────────── security group (SSM-only + Tailscale direct path) ────────────────
 module "security_group" {
-  source        = "../../modules/security-group"
-  name          = local.name
-  vpc_id        = module.network.vpc_id
-  description   = "8pi engine host: no inbound (SSM Session Manager only); egress for image pulls + AWS APIs"
-  ingress_rules = [] # SSM-only, nothing exposed
+  source      = "../../modules/security-group"
+  name        = local.name
+  vpc_id      = module.network.vpc_id
+  description = "8pi engine host: no HTTP inbound (console is tailnet-only); Tailscale WireGuard direct path; egress for image pulls + AWS APIs"
+  # Only inbound is Tailscale's WireGuard transport (UDP 41641). It is key-authenticated
+  # and encrypted — random internet packets are dropped by WireGuard. Without it,
+  # Tailscale falls back to DERP relay, which was unreliable here (Mac→box direct path
+  # blocked → console unreachable). The console (:80) stays private: reachable only over
+  # the tailnet mesh, never via a public inbound rule.
+  ingress_rules = [{
+    description = "Tailscale WireGuard direct path"
+    from_port   = 41641
+    to_port     = 41641
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }]
   # egress uses the module default (all outbound). Tighten to VPC endpoints later.
   tags = local.tags
 }
