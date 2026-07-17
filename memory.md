@@ -3,7 +3,48 @@
 A running log of current state, decisions, and known gaps. Update this when things
 change so the next session starts with truth, not assumptions.
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-18_
+
+## 2026-07-18 — Console↔engine wiring: audit completeness, real RoE, and the stubbed actions
+- **Branch `feat/console-wiring-audit-roe`** off the `feat/phase-f-adversary` tip (NOT `dev`): dev is
+  missing 4 phase-f commits (one-click `activate-test`, the autonomous-reliability fixes) that the
+  console needs to run the pipeline — building on dev would ship a console that can't test the pipeline.
+  So this branch carries those forward; PR should target `dev`. Green: full suite + ruff + mypy clean
+  (176 src files); +999/-81 across 17 files; 5 new files.
+- **Slice 1 — every engagement action is now audited.** The engine only wrote `engagement.open`/`close`
+  to the hash chain; sign/activate/pause/halt/resume/archive/RoE-edits lived only in SQLite. Added
+  `EngineAdapter.record_governance()` → appends `roe.updated`/`roe.signed`/`engagement.activated|paused|
+  resumed|closed|halted|archived` to the REAL chain, attributed to the logged-in operator. Fixed a latent
+  serialize bug (actor was doubled) → `actor`=lane (operator/agent/approver/system), `actor_id`=identity;
+  AuditTab filters client-side. The Audit tab is now a complete, tamper-evident lifecycle record.
+- **Slice 2 — RoE actually drives the engine.** The console's "Allowed Tools" picker and "Scope Denylist"
+  were silently ignored and had NO engine backing. Added `RulesOfEngagement.allowed_tools` (empty = no
+  restriction; non-empty = exclusive allowlist, denylist still wins) enforced in `toolrunner/runner.py`;
+  `Scope.denied_cidrs`/`denied_hosts` + `starts_at` (not-before) enforced in `toolrunner/scope.py`
+  (`_is_denied`, `is_not_yet_active`); all mapped in `scope_from_roe`. Live-proven: allowed host runs,
+  denied host refused ("target explicitly denied by RoE"), off-allowlist tool refused, all audited.
+- **Slice 3 — human gates over HTTP.** New `api/approvals.py` `ApprovalBroker`: its `responder` (wired
+  into non-test opens via a new `manager.open(gate_responder=...)`) parks a gated action and BLOCKS the
+  engine worker thread on an Event; `GET /approvals` lists them; approve/deny resolve + unblock; timeout
+  fails closed (denied). Test-auth stays frictionless (engine auto-approve). Proven: a real
+  `exploit_confirm` gate parks → console resolves → engine unblocks → `gate.request`/`gate.approved` on
+  the chain. Red Scope `exploit_approvals` + stats/counts now show real pending counts.
+- **Slice 4 — remediate/re-test.** `remediate_finding` reuses the real `Converter` to PROPOSE a control
+  (propose-only; never patches the customer's estate); `retest_finding` reuses `RetestRunner` to re-run
+  the exact confirming check. Console status derives from the lifecycle: open→remediating→(closed|retest).
+- **Slice 5 — CVE cache + refresh.** `LocalCveFeed.records` property; `cve_cache()` serializes the loaded
+  feed; `refresh_cve()` rebuilds via `build_cve_feed(settings)`, swaps into engine + engagement, re-correlates.
+- **Slice 6 — report HTML/PDF.** New `api/report_html.py` (pure, self-contained, escaped, theme-aware);
+  `GET /report.html` always; `GET /report.pdf` via optional `weasyprint` → honest 501 when absent. `?token=`
+  query auth already supported for direct links.
+- **Slice 7 — model playground + Red Scope copilot** through the BYOM gateway (rule #4): `model_infer`
+  (sensitivity `sensitive`/`airgapped` pinned LOCAL — SEC-05), `red_scope_chat`, `save_red_scope_agent`.
+- **Slice 8 — honesty sweep.** Fixed `EngagementDetail` `estate_id`→`estate.id`; real engagement-list
+  counts (invocations/agent-runs/model-calls/pending-approvals); wired `/invocations/{id}/raw` via the audit
+  backend's `get_raw`; tools endpoint reports real `licensed`/`license_verified`; removed legacy "purple-team"
+  copy from the touched console files (docs/* still carry it — sweep when touched).
+- **Not committed** (awaiting the user's go). Comprehensive in-process HTTP smoke passed across the whole
+  surface; audit chain verifies valid end-to-end.
 
 ## 2026-07-16 — Phase A (the Brain) built on branch `feat/gateway-v2-structured-output`
 - **Branched off `origin/dev`.** Not committed yet (user wants continuous build until they ask for the PR).

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Bug, Wrench, ArrowsClockwise, ShieldCheck, X as XIcon } from "@phosphor-icons/react";
+import { Bug, Wrench, ArrowsClockwise, ShieldCheck } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV, EXPLOIT, STATUS, timeAgo } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, KV, useToast, errMsg } from "../../components/ui";

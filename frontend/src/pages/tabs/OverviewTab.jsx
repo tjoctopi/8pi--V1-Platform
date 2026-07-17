@@ -1,7 +1,7 @@
 import React from "react";
 import { HardDrives, Bug, StackSimple, Robot, Cpu, ArrowRight, ShieldCheck } from "@phosphor-icons/react";
-import { Panel, KV, Badge, Btn, SectionTitle } from "../../components/ui";
-import { SEV, INTENSITY, timeAgo } from "../../lib/theme";
+import { Panel, KV, Badge, SectionTitle } from "../../components/ui";
+import { INTENSITY, timeAgo } from "../../lib/theme";
 
 export default function OverviewTab({ engagement: e, roe, counts, goTab }) {
   const metrics = [
@@ -33,7 +33,7 @@ export default function OverviewTab({ engagement: e, roe, counts, goTab }) {
               ["3", "Threat Map", "Living risk map ranked by exploitable exposure (C-08).", "map"],
               ["4", "Vuln & Patch Loop", "CVE/KEV correlation → exploitable flag → re-test (C-09).", "vuln"],
               ["5", "Offensive & Defensive Agents", "Scoped attack chain + detection, approval-gated (C-05/06).", "console"],
-              ["6", "Report", "Purple-team deliverable, reproducible from audit (C-10).", "report"],
+              ["6", "Report", "Offensive engagement deliverable, reproducible from audit (C-10).", "report"],
             ].map(([n, title, sub, tab]) => (
               <button key={n} onClick={() => goTab(tab)}
                 className="w-full flex items-center gap-4 p-3 border border-line hover:border-volt/50 hover:bg-volt/5 transition-colors text-left group">

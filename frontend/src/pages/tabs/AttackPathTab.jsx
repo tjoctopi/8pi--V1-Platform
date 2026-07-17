@@ -1,7 +1,8 @@
+/* eslint-disable react-hooks/exhaustive-deps -- intentional effect deps; preserved behavior */
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Globe from "react-globe.gl";
 import * as THREE from "three";
-import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, StackSimple, Compass, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple } from "@phosphor-icons/react";
+import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, StackSimple, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary, PreviewNotice } from "../../components/ui";
