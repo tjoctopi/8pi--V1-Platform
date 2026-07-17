@@ -10,8 +10,9 @@
     AE_ENV=prod
     AE_LOG_LEVEL=INFO
     AE_LOG_JSON=true
-    AE_AUDIT_BACKEND=postgres
+    AE_AUDIT_BACKEND={{ ae_audit_backend }}
     AE_AUDIT_POSTGRES_DSN=postgresql://{{ ae_pg_user }}:$PGPW@8pi-postgres:5432/{{ ae_pg_db }}
+    AE_AUDIT_SQLITE_PATH={{ ae_audit_sqlite_path }}
     AE_EVENTBUS_BACKEND=redis
     AE_EVENTBUS_REDIS_URL=redis://8pi-redis:6379/0
     AE_GRAPH_BACKEND=neo4j
@@ -29,7 +30,9 @@
     AE_API_JWT_SECRET=$JWT
     AE_API_ADMIN_EMAIL={{ admin_email }}
     AE_API_ADMIN_PASSWORD=$ADMINPW
-    AE_API_ORIGINS=
+    AE_API_ORIGINS={{ ae_api_origins }}
+    AE_API_DB={{ ae_api_db }}
+    AE_ALLOW_TEST_AUTH={{ ae_allow_test_auth | lower }}
     HTTP_PORT={{ http_port }}
     EOF
     chmod 600 "{{ app_dir }}/.env"
