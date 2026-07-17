@@ -18,6 +18,23 @@ from ..sandbox import SandboxResult
 from .base import ToolWrapper
 
 _HASH_RE = re.compile(r"\$krb5(tgs|asrep)\$[^\s]+")
+#: Extract the roasted principal from a hash so the credential lifecycle can
+#: attribute the captured material: TGS embeds ``*account*realm*spn*``; AS-REP
+#: embeds ``user@realm:`` before the checksum.
+_TGS_ACCOUNT_RE = re.compile(r"\$krb5tgs\$\d+\$\*([^*]+)\*([^*]+)\*")
+_ASREP_ACCOUNT_RE = re.compile(r"\$krb5asrep\$\d+\$([^:]+)[:$]")
+
+
+def principal_of(roast: str) -> str | None:
+    """The ``account@realm`` a roast blob belongs to, or ``None`` if unparseable."""
+
+    m = _TGS_ACCOUNT_RE.search(roast)
+    if m is not None:
+        return f"{m.group(1)}@{m.group(2)}"
+    m = _ASREP_ACCOUNT_RE.search(roast)
+    if m is not None:
+        return m.group(1)
+    return None
 
 
 class KerberoastWrapper(ToolWrapper):
@@ -58,4 +75,9 @@ class KerberoastWrapper(ToolWrapper):
             "hash_count": len(full),
             "kind": "asrep" if any(h.startswith("$krb5asrep$") for h in full) else "tgs",
             "roastable": len(full) > 0,
+            # The captured material + its principal — what the credential
+            # lifecycle (capture → crack → own) consumes. The wrapper still
+            # never cracks or uses them; it only surfaces them for offline work.
+            "hashes": full,
+            "accounts": [p for h in full if (p := principal_of(h)) is not None],
         }

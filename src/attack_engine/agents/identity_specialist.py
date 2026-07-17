@@ -17,17 +17,21 @@ through the Tool Runner boundary, so scope/rate/RoE hold.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..knowledge.worldmodel import WorldModel
 from ..logging import get_logger
 from ..schemas.agentspec import ModelTier
 from ..schemas.beliefs import Observation
 from ..schemas.tools import ToolResult
+from ..toolrunner.wrappers.kerberoast import principal_of
 from .actions import ActionOutcome, ProposedAction
 from .context import AgentContext
 from .reasoning import LlmPlanner, LoopContext, ReasoningLoop
 from .tool_actor import ToolRunnerActor
+
+if TYPE_CHECKING:
+    from ..credentials.manager import CredentialManager
 
 _log = get_logger("agent.identity")
 
@@ -47,7 +51,25 @@ IDENTITY_SYSTEM_PROMPT = (
 
 
 class ADObserver:
-    """Folds identity tool output into the world model's AD attack graph + beliefs."""
+    """Folds identity tool output into the world model's AD attack graph + beliefs.
+
+    Optionally drives the credential lifecycle (Phase E3): given a
+    :class:`~attack_engine.credentials.manager.CredentialManager` and a candidate
+    ``wordlist``, a Kerberoast/AS-REP result is not just flagged as a lead — its
+    captured ticket is cracked offline and, on success, the roasted principal is
+    *owned* in the world model, which re-plans the path to Domain Admin (the
+    "own a principal → new attack path" loop). Without a manager the observer
+    behaves exactly as before: it records the lead and stops.
+    """
+
+    def __init__(
+        self,
+        *,
+        cred_manager: CredentialManager | None = None,
+        wordlist: Sequence[str] = (),
+    ) -> None:
+        self._creds = cred_manager
+        self._wordlist = tuple(wordlist)
 
     def observe(self, action: ProposedAction, outcome: ActionOutcome, ctx: LoopContext) -> None:
         result = outcome.raw
@@ -84,14 +106,45 @@ class ADObserver:
         existing = wm.find_hypothesis(kind="ad-credential", subject=principal)
         if existing is not None:
             wm.observe(existing.id, obs)
+        else:
+            wm.add_hypothesis(
+                subject=principal, kind="ad-credential",
+                title=f"{principal} is {technique}-roastable",
+                rationale=(f"{technique} account — request its ticket and crack it "
+                           "offline to own it."),
+                prior=0.5, suggested_tools=("hashcat",), created_by="identity",
+                observations=(obs,),
+            )
+        self._run_credential_lifecycle(wm, parsed)
+
+    def _run_credential_lifecycle(self, wm: WorldModel, parsed: dict[str, Any]) -> None:
+        """Capture → crack → own each roasted ticket, then re-surface DA paths.
+
+        Opt-in: only runs when a credential manager and a wordlist are configured.
+        Owning a cracked principal re-plans the identity graph, so a fresh route to
+        Domain Admin can appear (the "own a principal → new attack path" loop).
+        """
+
+        from ..schemas.credentials import SecretKind
+
+        if self._creds is None or not self._wordlist:
             return
-        wm.add_hypothesis(
-            subject=principal, kind="ad-credential",
-            title=f"{principal} is {technique}-roastable",
-            rationale=f"{technique} account — request its ticket and crack it offline to own it.",
-            prior=0.5, suggested_tools=("hashcat",), created_by="identity",
-            observations=(obs,),
-        )
+        hashes = parsed.get("hashes")
+        if not isinstance(hashes, list) or not hashes:
+            return
+        owned_any = False
+        for roast in hashes:
+            if not isinstance(roast, str):
+                continue
+            kind = (SecretKind.KERBEROS_ASREP if roast.startswith("$krb5asrep$")
+                    else SecretKind.KERBEROS_TGS)
+            who = principal_of(roast) or "unknown"
+            captured = self._creds.capture(who, kind, roast, source="kerberoast")
+            cracked = self._creds.crack(captured, self._wordlist)
+            if cracked is not None and self._creds.own(cracked, wm):
+                owned_any = True
+        if owned_any:
+            self._surface_paths(wm, source="kerberoast-crack")
 
     # --- collection ingestion (the tested + future file-artifact entry) --------
 

@@ -78,6 +78,65 @@ def test_observer_kerberoast_marks_roastable_and_lead() -> None:
     assert {r["principal"] for r in wm.ad_graph.roastable()} == {"SVC_SQL@CORP"}
 
 
+_TGS_SVC_SQL = (
+    "$krb5tgs$23$*svc_sql*CORP.LOCAL*MSSQL/db*$"
+    "5bf73a77ffb2392433271d4b7c2fc8d1$"
+    "364a207fe91c05e8eaeaf5d775c6bdf726f9edd61276cd52b62d8fcdcab9"
+)
+
+
+def test_observer_cracks_and_owns_roasted_principal_surfacing_da_path() -> None:
+    """E3 end-to-end: a Kerberoast result → capture → crack → own → new DA path."""
+
+    from attack_engine.ad.graph import ADEdgeType, ADGraph, PrincipalKind
+    from attack_engine.credentials.manager import CredentialManager
+    from attack_engine.governance.audit import AuditLog
+
+    # svc_sql holds GenericAll over Domain Admins — but nothing is owned yet.
+    graph = ADGraph()
+    graph.add_principal("svc_sql@CORP.LOCAL", PrincipalKind.USER)
+    graph.add_principal("Domain Admins", PrincipalKind.GROUP, high_value=True)
+    graph.add_edge("SVC_SQL@CORP.LOCAL", "DOMAIN ADMINS", ADEdgeType.GENERIC_ALL)
+    wm = WorldModel("eng-1")
+    wm.set_ad_graph(graph)
+    assert wm.domain_admin_paths() == []
+
+    mgr = CredentialManager("eng-1", AuditLog())
+    observer = ADObserver(cred_manager=mgr, wordlist=["Winter2025", "Summer2026!"])
+    observer.observe(
+        ProposedAction(tool="kerberoast", target="10.5.0.20", rationale="roast",
+                       params={"account": "svc_sql@CORP.LOCAL"}),
+        ActionOutcome(ok=True, summary="ok",
+                      raw=_tool_result("kerberoast", "10.5.0.20",
+                                       {"roastable": True, "kind": "tgs", "hash_count": 1,
+                                        "hashes": [_TGS_SVC_SQL],
+                                        "accounts": ["svc_sql@CORP.LOCAL"]})),
+        _loop_ctx(wm),
+    )
+    # Owned the cracked account → the path to Domain Admins now exists and is surfaced.
+    assert "SVC_SQL@CORP.LOCAL" in wm.owned_principals
+    paths = wm.domain_admin_paths()
+    assert paths and paths[0].target == "DOMAIN ADMINS"
+    assert any(h.kind == "ad-path" for h in wm.open_hypotheses())
+
+
+def test_observer_without_manager_only_records_lead() -> None:
+    """No credential manager configured → the observer records the lead, no crack."""
+
+    wm = WorldModel("eng-1")
+    ADObserver().observe(
+        ProposedAction(tool="kerberoast", target="10.5.0.20", rationale="roast",
+                       params={"account": "svc_sql@CORP.LOCAL"}),
+        ActionOutcome(ok=True, summary="ok",
+                      raw=_tool_result("kerberoast", "10.5.0.20",
+                                       {"roastable": True, "kind": "tgs", "hash_count": 1,
+                                        "hashes": [_TGS_SVC_SQL]})),
+        _loop_ctx(wm),
+    )
+    assert wm.owned_principals == []
+    assert any(h.kind == "ad-credential" for h in wm.open_hypotheses())
+
+
 def test_observer_bloodhound_with_data_builds_graph() -> None:
     wm = WorldModel("eng-1")
     wm.mark_owned("alice@corp")

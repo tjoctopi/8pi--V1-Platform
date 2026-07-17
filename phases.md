@@ -170,7 +170,7 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     The web-shell session is a command-exec channel; upgrading it to a Meterpreter/Sliver beacon is the
     `MsfFootholdLauncher`/Sliver path (needs msfrpcd/Sliver deployed). Also: autonomous auth/session (unblocks
     IDOR graduation) + more class oracles (deser/XXE/JWT/GraphQL).
-- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2 built + green; GATE MET LIVE (foothold→Domain Admin); native-tool wrapping + cred-lifecycle remain*
+- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2+E3 built + green; GATE MET LIVE (foothold→Domain Admin); native-tool wrapping + lateral execution remain*
   Native AD tooling (impacket/certipy/ldap3) → full abuse graph (Kerberoast / ADCS ESC1-8 / delegation / DCSync
   / trusts) → credential lifecycle (crack→PtH→escalate) → real lateral execution → grounded path planning over
   real edges. **Gate:** foothold → Domain Admin on the AD-forest range.
@@ -196,15 +196,33 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     the collected topology, `ADObserver.ingest_collection` → the abuse graph found `ALICE →[GenericAll/T1098]→
     DOMAIN ADMINS` and `DomainAdminObjective` fired satisfied — the exact path executed live. *Foothold →
     Domain Admin, live on an AD forest, with the engine identifying the path.*
+  - ✅ E3 Credential lifecycle (capture → crack → own → escalate) — `credentials/` package:
+    `CredentialVault` (raw material behind opaque refs + masked previews; the `Credential` model in
+    `schemas/credentials.py` never carries the secret — data-min rule §6/§8), `HashCracker` (**real** offline
+    crypto: NT-hash via MD4, and Kerberos RC4-HMAC roast cracking for TGS-REP/AS-REP — validated against genuine
+    impacket-encrypted tickets), and `CredentialManager` (governed capture→crack→own, hash-chained audit, never
+    touches the wire). The `kerberoast` wrapper now emits the roast blobs + parsed principals; `ADObserver`
+    optionally runs the lifecycle so a roasted account is cracked and **owned**, which re-plans the AD graph and
+    surfaces a fresh path to Domain Admin (the "own a principal → new attack path" loop). +28 tests (665 green).
+  - ✅ **E3 PROVEN (2026-07-17, engine-driven against the live DC account):** set `svc_sql@corp.local`'s password
+    on the running Samba-AD DC, produced a **genuine** `$krb5tgs$` (impacket RC4-HMAC keyed by svc_sql's real NT
+    hash — exactly what a live Kerberoast yields), and drove it through the engine: `CredentialManager.capture`
+    → `crack` **recovered the real password** → `own` marked svc_sql → `DomainAdminObjective`'s path
+    `SVC_SQL →[GenericAll/T1098]→ DOMAIN ADMINS` surfaced. 3 hash-chained audit entries, `audit.verify()` True,
+    no secret in any payload. Live-range caveat reproduced: impacket's on-wire *ticket request* against this
+    Samba build still fails (`KRB_AP_ERR_INAPP_CKSUM` for TGS; KDC rejects AS-REP too) — Kerberoast
+    *enumeration* over LDAP works (found the SPN), but ticket *extraction* needs a Windows DC or tooling work.
+    The crack rung itself is cryptographically real (independent impacket cross-check), so the lifecycle is
+    unblocked the moment a real ticket is obtainable.
   - ⏳ Honest remaining depth (not gate-blocking): (a) **native-tool wrapping** — impacket/certipy/bloodyAD/
     bloodhound-python ran in range-attached containers (as the sandbox would), not yet as first-class sandboxed
     engine tools; wrap them + add sandbox file-artifact retrieval so live BloodHound collection feeds the
     observer directly. (b) **Tooling-vs-Samba quirks:** impacket DRSUAPI DCSync and bloodhound-python collection
     both choked on this Samba build (protocol-parse incompatibilities, NOT authorization — alice's DCSync right
-    was accepted); the reliably-executable primitive was LDAP ACL-abuse. (c) **E3 credential lifecycle**
-    (Kerberoast→crack→PtH/PtT) and **E4 real lateral execution** over C2/SOCKS (wmiexec/psexec/winrm) for
-    multi-host forests. Range deps left running: `ae-dc` (Samba-AD), plus `ae-attacker*`/`ae-bloodyad` images
-    and `impacket`/`bloodhound` in the venv.
+    was accepted); the reliably-executable primitive was LDAP ACL-abuse. (c) **E4 real lateral execution** over
+    C2/SOCKS (wmiexec/psexec/winrm) for multi-host forests, and on-wire credential *reuse* (PtH/PtT) — E3 owns
+    the principal in the model; landing a session as that principal is E4. Range deps left running: `ae-dc`
+    (Samba-AD), plus `ae-attacker*`/`ae-bloodyad` images and `impacket`/`bloodhound` in the venv.
 - **Phase F — Full adversary emulation.** ☐
   Autonomous campaign across the whole chain, adversary profiles, T2/T3 autonomy, gated evasion testing.
   **Gate:** external → Domain Admin, unattended, fully audited.

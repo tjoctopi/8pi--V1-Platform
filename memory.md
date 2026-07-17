@@ -179,8 +179,41 @@ _Last updated: 2026-07-16_
   enumerated but TGS had KRB_AP_ERR_INAPP_CKSUM. So: prefer bloodyAD/ldap for Samba; DCSync/collection need
   tooling work or a Windows DC. See [[8pi-live-range-available]].
 - **Remaining Phase-E depth (not gate-blocking):** wrap impacket/certipy/bloodyAD/bloodhound-python as
-  first-class sandboxed engine tools + sandbox file-artifact retrieval; E3 credential lifecycle (crack); E4 real
-  lateral execution (wmiexec/psexec/winrm over C2 SOCKS) for multi-host forests.
+  first-class sandboxed engine tools + sandbox file-artifact retrieval; E4 real lateral execution
+  (wmiexec/psexec/winrm over C2 SOCKS) + on-wire credential reuse (PtH/PtT) for multi-host forests.
+
+## 2026-07-17 — Phase E3 (credential lifecycle) built + proven on branch `feat/phase-e-identity-ad`
+- **New `credentials/` package** (schema + vault + cracker + manager), the capture→crack→own→escalate lifecycle:
+  - `schemas/credentials.py` — `Credential` (metadata only: opaque `secret_ref` + masked preview; the raw
+    secret NEVER lives in the model), `SecretKind` (plaintext/nt_hash/aes_key/ticket/kerberos_tgs/kerberos_asrep),
+    `CredentialState` (captured/cracked/validated). `is_reusable` = hash/key/ticket (PtH/PtT); roast kinds aren't.
+  - `credentials/vault.py` — `CredentialVault`: in-memory store, opaque `vault-…` refs, `mask()` previews, never
+    logs raw. The one chokepoint holding material (data-min rule §6/§8).
+  - `credentials/cracker.py` — `HashCracker`: **real** offline crypto. `crack_nt` (MD4 utf-16-le over a wordlist);
+    `crack_kerberos` (RC4-HMAC per RFC 4757: K1=HMAC-MD5(nt,usageLE), K3=HMAC-MD5(K1,checksum), RC4 decrypt,
+    verify HMAC — TGS-REP usage 2 / AS-REP usage 8; auto-detects format). `nt_hash()` + `principal_of()` helpers.
+    **Validated against genuine impacket-encrypted tickets** (independent impl) — TGS/AS-REP/NT all crack, neg
+    control fails. Only stdlib + pycryptodome (ships via impacket) so it runs in the zero-service test suite.
+  - `credentials/manager.py` — `CredentialManager`: governed `capture` (→ vault + Credential, audited, no
+    material in payload), `crack` (offline → mints reusable PLAINTEXT cred, audits success/failure with try-count
+    only), `own` (marks principal owned in the WorldModel → `domain_admin_paths()` re-plans → fresh DA path).
+    Never touches the wire; on-wire reuse (PtH) is E4/FootholdRunner under a gate.
+- **Wired into the loop:** `kerberoast` wrapper `parse` now emits `hashes` (roast blobs) + `accounts`
+  (parsed principals). `ADObserver(cred_manager=…, wordlist=…)` (opt-in, backward-compatible) runs
+  capture→crack→own on roasted tickets and re-surfaces paths. `principal_of` made public in the wrapper.
+- **Green: 665 passed, 3 integration skips; ruff+mypy clean (172 src files).** +28 tests (credentials/ +
+  identity-specialist wiring + kerberoast wrapper).
+- **PROVEN engine-driven on the live DC account (2026-07-17):** set `svc_sql@corp.local` password on the running
+  `ae-dc`, forged a GENUINE `$krb5tgs$` (impacket RC4-HMAC keyed by svc_sql's real NT hash), ran it through the
+  engine → cracked back to the real password → owned svc_sql → path `SVC_SQL→[GenericAll]→DOMAIN ADMINS` surfaced;
+  3 hash-chained audit entries, `audit.verify()` True, no secret in payloads. Script: scratchpad/e3_live_proof.py.
+- **Live-range caveat reproduced (as memory predicted):** impacket's on-wire ticket *request* vs this Samba build
+  fails — Kerberoast TGS = `KRB_AP_ERR_INAPP_CKSUM`, AS-REP request rejected by the KDC even with
+  DONT_REQ_PREAUTH set (restarted DC, LDAP showed the flag, KDC still required preauth). Kerberoast *enumeration*
+  over LDAP works (found `MSSQLSvc/db.corp.local:1433`). So ticket *extraction* needs a Windows DC or tooling
+  work; the crack rung is cryptographically real regardless. Reverted svc_sql UAC to 66048 (normal SPN account).
+- **PR reminder (user ask):** commit on `feat/phase-e-identity-ad`; open the PR into `dev` when Phase E wraps so
+  E1–E3 (and E4) land on the deployed version. Pull latest `dev` + rebase before the PR.
 
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous

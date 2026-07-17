@@ -107,3 +107,30 @@ class TestMetasploitCheckOnly:
         )
         assert parsed["vulnerable"] is False
         assert parsed["checked"] is True
+
+
+class TestKerberoast:
+    def test_parse_emits_hashes_and_accounts(self) -> None:
+        from attack_engine.toolrunner.wrappers.kerberoast import KerberoastWrapper
+
+        tgs = "$krb5tgs$23$*svc_sql*CORP.LOCAL*MSSQL/db*$abcd$ef01"
+        parsed = KerberoastWrapper().parse("10.5.0.20", _res(tgs.encode()))
+        assert parsed["roastable"] is True
+        assert parsed["hash_count"] == 1
+        assert parsed["hashes"] == [tgs]
+        assert parsed["accounts"] == ["svc_sql@CORP.LOCAL"]
+
+    def test_principal_of_tgs_and_asrep(self) -> None:
+        from attack_engine.toolrunner.wrappers.kerberoast import principal_of
+
+        assert principal_of("$krb5tgs$23$*svc_sql*CORP.LOCAL*x*$a$b") == "svc_sql@CORP.LOCAL"
+        assert principal_of("$krb5asrep$23$alice@CORP.LOCAL:a$b") == "alice@CORP.LOCAL"
+        assert principal_of("garbage") is None
+
+    def test_parse_empty_when_no_hashes(self) -> None:
+        from attack_engine.toolrunner.wrappers.kerberoast import KerberoastWrapper
+
+        parsed = KerberoastWrapper().parse("10.5.0.20", _res(b"no tickets here"))
+        assert parsed["roastable"] is False
+        assert parsed["hashes"] == []
+        assert parsed["accounts"] == []
