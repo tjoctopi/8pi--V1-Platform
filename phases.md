@@ -239,9 +239,36 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     ticket *requests* all choked on this Samba build (protocol-parse incompat / KDC behavior, NOT authorization);
     the reliably-executable primitive was LDAP ACL-abuse. Range deps left running: `ae-dc` (Samba-AD),
     `ae-metasploitable`, `ae-msfrpcd`, plus `ae-attacker*`/`ae-bloodyad` images.
-- **Phase F — Full adversary emulation.** ☐
+- **Phase F — Full adversary emulation.** ◐ *F1+F2 built + green; GATE DEMONSTRATED (unattended → Domain Admin, audited); live-LLM full-chain run is the carry-forward*
   Autonomous campaign across the whole chain, adversary profiles, T2/T3 autonomy, gated evasion testing.
   **Gate:** external → Domain Admin, unattended, fully audited.
+  - ✅ F1 Autonomous campaign engine — `orchestrator/adversary.py`: `AdversaryCampaign` drives the **real**
+    Phase A–E specialists (recon → web → identity), each an objective-directed reasoning loop, chained by the
+    `ObjectiveController` with **frontier expansion** between rounds (recon finds hosts, web lands footholds,
+    identity cracks/owns principals; each new vantage grows the owned set and is re-planned from) until the goal
+    (default: reach Domain Admin) is met, the kill switch trips, the token budget runs out, or the frontier stops
+    growing (convergence). Governed (kill-switch + budget checked before every round/phase) and audited
+    (`campaign.start`/`campaign.complete`, autonomous-vs-gated counts, chain verify). `from_engagement()` seeds
+    targets as reachable assets and wires the real specialist loops. Replaces the legacy `CampaignRunner`'s
+    reliance on the fixed-phase DAG (which reported lateral/privesc/objective as *pending capabilities*).
+  - ✅ F2 Adversary profiles + autonomy tiers + gated evasion framing — the profile *declares* TTPs; the signed
+    RoE *decides* what runs. `authorization_summary(scope, techniques)` classifies each declared TTP as
+    **autonomous** (on the RoE allowlist at tier ≥ 1), **gated** (runs but human-approved), or **gated-evasion**
+    (`EVASION_TECHNIQUES` — obfuscation/indicator-removal/impair-defenses/process-injection — **always gated,
+    never autonomous regardless of tier**: measured detection-efficacy testing inside signed scope, not a
+    make-undetectable tool). Surfaced in `CampaignOutcome.authorization` + the markdown report; new
+    `evasion-tester` built-in profile. T0 gates all; T1 autonomous for allowlisted; T2/T3 broaden the allowlist.
+  - ✅ **GATE DEMONSTRATED (2026-07-17):** an **unattended** `AdversaryCampaign` (evasion-tester profile) reached
+    **Domain Admin** in one round with real governance objects — the identity leg ran the real E3 lifecycle on a
+    **genuine impacket Kerberoast ticket** for the live DC account `svc_sql` (cracked offline → owned →
+    `SVC_SQL →[GenericAll]→ DOMAIN ADMINS` surfaced), `DomainAdminObjective` satisfied, `audit.verify()=True`, no
+    secret in any payload, and the report showed evasion TTPs classified always-gated. Script:
+    scratchpad/phase_f_live.py. Real-world lesson recorded: **principal-name normalization** (NetBIOS `@corp`
+    vs FQDN `@CORP.LOCAL`) must align across collectors or an owned principal won't match its graph node.
+  - ⏳ Carry-forward (not gate-blocking): a fully **live-LLM-driven** external→web→identity run (the specialist
+    planners driven by the real model across the whole chain in one campaign) reuses the A/D/E plumbing already
+    proven live in those phases; and on-wire lateral needs a **Windows member host** (this range is Linux-Samba
+    only). Also: live SSE narrative of the campaign for the console (product surface).
 - **Phase G — Scale & continuous eval.** ☐
   Externalized state (Postgres/Redis/Neo4j), tool-executor pool, real benchmark range, continuous
   calibration/regression (integration tier that actually lands footholds). **Gate:** multi-node, benchmarked, FP≈0.

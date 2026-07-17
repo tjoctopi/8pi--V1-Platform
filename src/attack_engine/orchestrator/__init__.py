@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
+from .adversary import (
+    EVASION_TECHNIQUES,
+    AdversaryCampaign,
+    AuthorizationSummary,
+    CampaignOutcome,
+    CampaignPhase,
+    PhaseRun,
+    authorization_summary,
+    seed_targets,
+)
 from .controller import ControllerResult, ObjectiveController
-from .objective import ConfidenceObjective, MapSurfaceObjective, Objective
+from .objective import (
+    ConfidenceObjective,
+    DomainAdminObjective,
+    MapSurfaceObjective,
+    Objective,
+)
 from .orchestrator import LoopResult, Orchestrator
 from .plan import AttackPlan, Phase, build_plan, prioritize_targets
 from .report import EngagementReport, build_report
@@ -24,4 +39,13 @@ __all__ = [
     "Objective",
     "MapSurfaceObjective",
     "ConfidenceObjective",
+    "DomainAdminObjective",
+    "AdversaryCampaign",
+    "CampaignOutcome",
+    "CampaignPhase",
+    "PhaseRun",
+    "seed_targets",
+    "AuthorizationSummary",
+    "authorization_summary",
+    "EVASION_TECHNIQUES",
 ]

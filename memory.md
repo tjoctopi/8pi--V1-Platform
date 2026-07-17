@@ -243,7 +243,37 @@ _Last updated: 2026-07-16_
   client is integration-only (same posture as Sliver/msfrpc). To run on-wire PtH: add a Windows member host.
 - **Phase E COMPLETE (E1 abuse graph, E2 identity specialist, E3 credential lifecycle, E4 lateral execution).**
   Gate (foothold→Domain Admin) met live; the one carry-forward is native-tool wrapping as first-class sandboxed
-  engine tools + a Windows member host. **Next: open the PR `feat/phase-e-identity-ad` → `dev`.**
+  engine tools + a Windows member host. **PR #14 `feat/phase-e-identity-ad` → `dev` is OPEN + MERGEABLE.**
+
+## 2026-07-17 — Phase F (full adversary emulation) F1+F2 built + gate demonstrated
+- **Branch `feat/phase-f-adversary`** (off the E tip, since F imports E's credentials/lateral). Rebase onto `dev`
+  after PR #14 (E) merges, then PR F → dev. Pushed as `furqanali-rgb` (gh auth switch — FurqanGGI is read-only).
+- **F1 — `orchestrator/adversary.py` `AdversaryCampaign`:** the real autonomous campaign. Drives the A–E
+  specialists (recon→web→identity), each an objective-directed `ReasoningLoop`, chained by `ObjectiveController`
+  with **frontier expansion** each round (frontier = reachable_assets + owned_principals; grows via recon hosts +
+  identity/lateral owned principals; re-plan from each new vantage). Stops on goal-met / kill-switch / budget /
+  convergence (no frontier growth). Governed + audited (`campaign.start`/`campaign.complete`). `CampaignPhase`/
+  `PhaseRun`/`CampaignOutcome` (+to_markdown). `from_engagement(targets, profile, goal)` seeds targets as
+  reachable assets (`seed_targets`) + builds the real specialist loops from the AgentContext; default goal =
+  `DomainAdminObjective`. Left the legacy `campaign.py` `CampaignRunner` intact (added alongside, like the
+  ObjectiveController was vs the legacy Orchestrator).
+- **F2 — profiles + autonomy tiers + gated evasion:** `authorization_summary(scope, techniques)` classifies each
+  profile TTP as autonomous / gated / gated-evasion under the signed RoE (profile declares, RoE decides).
+  `EVASION_TECHNIQUES` (T1027/T1070/T1140/T1202/T1218/T1562/T1055) are **always gated, never autonomous even at
+  T3** — measured detection-testing framing. `CampaignOutcome.authorization` + report surface it. New
+  `evasion-tester` built-in profile (its evasion ids live in `techniques`, NOT `kill_chain`, since kill_chain ids
+  must be catalogued in `attack/catalog.py build_library` — a test enforces that).
+- **Green: 691 passed, 3 integration skips; ruff+mypy clean (174 src files).** +24 tests
+  (tests/orchestrator/test_adversary.py + engine from_engagement wiring test). Deploy-safe: no new runtime dep;
+  `attack_engine.orchestrator` + `attack_engine.api.app` import chain boots clean.
+- **GATE DEMONSTRATED:** unattended `AdversaryCampaign` (evasion-tester profile) → Domain Admin in 1 round with
+  real governance objects; identity leg ran the real E3 lifecycle on a genuine impacket Kerberoast ticket for the
+  live DC account svc_sql (cracked → owned → `SVC_SQL→[GenericAll]→DOMAIN ADMINS`), audit verify()=True, evasion
+  TTPs shown always-gated. Script: scratchpad/phase_f_live.py.
+- **Real-world lesson:** principal-name normalization — NetBIOS `@corp` vs FQDN `@CORP.LOCAL` must align across
+  collectors or an owned principal won't match its AD-graph node (hit this in the proof; a normalization pass
+  across collectors/roast-parsing is worth a future slice). **Carry-forward:** fully live-LLM-driven full-chain
+  run (reuses A/D/E plumbing) + Windows member host for on-wire lateral + campaign SSE narrative.
 
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
