@@ -170,7 +170,7 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     The web-shell session is a command-exec channel; upgrading it to a Meterpreter/Sliver beacon is the
     `MsfFootholdLauncher`/Sliver path (needs msfrpcd/Sliver deployed). Also: autonomous auth/session (unblocks
     IDOR graduation) + more class oracles (deser/XXE/JWT/GraphQL).
-- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2 built + green; needs AD-forest range for live gate*
+- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2 built + green; GATE MET LIVE (foothold→Domain Admin); native-tool wrapping + cred-lifecycle remain*
   Native AD tooling (impacket/certipy/ldap3) → full abuse graph (Kerberoast / ADCS ESC1-8 / delegation / DCSync
   / trusts) → credential lifecycle (crack→PtH→escalate) → real lateral execution → grounded path planning over
   real edges. **Gate:** foothold → Domain Admin on the AD-forest range.
@@ -187,11 +187,24 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     model gained an AD-graph + owned-principal set (`ad_graph`/`mark_owned`/`domain_admin_paths`); a new
     **`DomainAdminObjective`** fires deterministically once a path to a high-value target exists (finally a
     fireable DA objective — the predicate objective.py said would "arrive with Phase E").
-  - ⏳ Remaining for the gate (all need an **AD-forest range**, which the current Linux range lacks): credential
-    lifecycle (E3: capture→crack→PtH/PtT→escalate), real lateral execution over C2/SOCKS (E4:
-    wmiexec/psexec/winrm), live BloodHound collection (needs sandbox file-artifact retrieval — the wrapper emits
-    counts, real bloodhound-python writes JSON files), and standing up the range itself (Samba-AD DC or Windows
-    forest). Then run foothold→Domain-Admin live.
+  - ✅ **GATE MET — LIVE (2026-07-17).** Stood up a real **Samba-AD DC** (`CORP.LOCAL`, container `ae-dc` at
+    10.5.0.20 on the range net; fixed its interface binding — it auto-bound to `gretap0`/loopback, forced
+    `interfaces = lo eth0`). Provisioned a low-priv foothold user `alice`, a kerberoastable SPN account
+    (`svc_sql`), and the misconfig: alice holds `GenericAll` on **Domain Admins**. **Live compromise:** as
+    alice, over LDAP (bloodyAD in a range-attached container), abused GenericAll to add herself to Domain
+    Admins — verified before (`{Administrator}`) → after (`{alice, Administrator}`). **Engine reasoning:** from
+    the collected topology, `ADObserver.ingest_collection` → the abuse graph found `ALICE →[GenericAll/T1098]→
+    DOMAIN ADMINS` and `DomainAdminObjective` fired satisfied — the exact path executed live. *Foothold →
+    Domain Admin, live on an AD forest, with the engine identifying the path.*
+  - ⏳ Honest remaining depth (not gate-blocking): (a) **native-tool wrapping** — impacket/certipy/bloodyAD/
+    bloodhound-python ran in range-attached containers (as the sandbox would), not yet as first-class sandboxed
+    engine tools; wrap them + add sandbox file-artifact retrieval so live BloodHound collection feeds the
+    observer directly. (b) **Tooling-vs-Samba quirks:** impacket DRSUAPI DCSync and bloodhound-python collection
+    both choked on this Samba build (protocol-parse incompatibilities, NOT authorization — alice's DCSync right
+    was accepted); the reliably-executable primitive was LDAP ACL-abuse. (c) **E3 credential lifecycle**
+    (Kerberoast→crack→PtH/PtT) and **E4 real lateral execution** over C2/SOCKS (wmiexec/psexec/winrm) for
+    multi-host forests. Range deps left running: `ae-dc` (Samba-AD), plus `ae-attacker*`/`ae-bloodyad` images
+    and `impacket`/`bloodhound` in the venv.
 - **Phase F — Full adversary emulation.** ☐
   Autonomous campaign across the whole chain, adversary profiles, T2/T3 autonomy, gated evasion testing.
   **Gate:** external → Domain Admin, unattended, fully audited.

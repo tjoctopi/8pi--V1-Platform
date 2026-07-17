@@ -162,11 +162,25 @@ _Last updated: 2026-07-16_
   `owned_principals`/`domain_admin_paths` (lazy ADGraph, TYPE_CHECKING import to avoid layering weight).
   New `DomainAdminObjective` (orchestrator/objective.py) fires when a path to a high-value target exists.
 - **Green: 637 tests, ruff+mypy clean (167 src files).** Uncommitted → will commit on the E branch.
-- **Honest gate status:** E capability (deep graph + AD reasoning + fireable DA objective) built + tested OFFLINE.
-  Live gate (foothold→DA) BLOCKED on infra the current range lacks: an **AD-forest range** (no Windows/Samba-AD
-  DC up — range is Juice/DVWA/Metasploitable Linux). Remaining: E3 credential lifecycle (crack), E4 lateral exec
-  (wmiexec/psexec/winrm over C2 SOCKS), live BloodHound collection (sandbox file-artifact retrieval — wrapper
-  emits only counts; real bloodhound-python writes JSON files), + stand up the AD range. See [[8pi-live-range-available]].
+- **GATE MET LIVE (2026-07-17): foothold → Domain Admin on a real AD forest.** Stood up Samba-AD DC image
+  `diegogslomp/samba-ad-dc` as `ae-dc` (CORP.LOCAL, 10.5.0.20 on range net, `--privileged` for sysvol NT-ACLs,
+  REALM/DOMAIN/ADMIN_PASS/DNS_FORWARDER env). **Gotcha:** it auto-bound samba to `gretap0`/loopback → edit
+  smb.conf `interfaces = lo eth0` + `bind interfaces only = no`, restart. Provisioned alice (low-priv foothold),
+  svc_sql (SPN/kerberoastable), and granted alice `GenericAll` on Domain Admins via `samba-tool dsacl set`
+  (also granted DCSync via the two replication GUID CRs). **Live compromise:** alice added herself to Domain
+  Admins over LDAP (bloodyAD, range-attached container) — verified before/after membership. **Engine side:**
+  ADObserver.ingest_collection → abuse graph found ALICE→GenericAll→DOMAIN ADMINS, DomainAdminObjective fired.
+  Scripts/infra in scratchpad; images `ae-attacker`(impacket+bloodhound), `ae-attacker11/12`, `ae-bloodyad`.
+- **Tooling reality (important for next time):** host (macOS Docker Desktop) CANNOT reach range container IPs
+  (10.5.0.x) directly → AD tools must run in range-attached containers (like the sandbox does), not the venv.
+  impacket DRSUAPI DCSync FAILED against this Samba (`byte indices...`/`ERROR_SUCCESS` parse bugs across
+  0.11/0.12/0.13) — a protocol-parse incompat, NOT authorization. bloodhound-python collection also failed on
+  Samba LDAP (`server.info None`). Reliable executable primitive = LDAP ACL-abuse via bloodyAD. Kerberoast SPN
+  enumerated but TGS had KRB_AP_ERR_INAPP_CKSUM. So: prefer bloodyAD/ldap for Samba; DCSync/collection need
+  tooling work or a Windows DC. See [[8pi-live-range-available]].
+- **Remaining Phase-E depth (not gate-blocking):** wrap impacket/certipy/bloodyAD/bloodhound-python as
+  first-class sandboxed engine tools + sandbox file-artifact retrieval; E3 credential lifecycle (crack); E4 real
+  lateral execution (wmiexec/psexec/winrm over C2 SOCKS) for multi-host forests.
 
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
