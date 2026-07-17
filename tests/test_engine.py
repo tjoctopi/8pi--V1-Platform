@@ -115,6 +115,51 @@ def test_engagement_foothold_factory(engine: Engine, range_scope: Scope) -> None
     assert runner.teardown() == 1
 
 
+def test_engagement_lateral_factory(engine: Engine, range_scope: Scope) -> None:
+    """The engine wires a governed lateral launcher that reuses a credential to
+    land + prove a session on a new host (E4)."""
+
+    from attack_engine.credentials.vault import CredentialVault
+    from attack_engine.governance.gates import approve_all
+    from attack_engine.schemas.credentials import (
+        Credential,
+        CredentialState,
+        SecretKind,
+    )
+
+    class _FakeLateralClient:
+        def __init__(self) -> None:
+            self._live: set[str] = set()
+
+        def open(self, *, host, protocol, principal, domain, secret_kind, secret):
+            self._live.add("h")
+            return "h"
+
+        def run(self, handle, command):
+            return {"whoami": "corp\\svc_sql", "id": "uid=500", "hostname": "DB01"}.get(
+                command, ""
+            )
+
+        def alive(self, handle):
+            return handle in self._live
+
+        def close(self, handle):
+            self._live.discard(handle)
+
+    engagement = engine.engagement(range_scope, gate_responder=approve_all())
+    vault = CredentialVault()
+    cred = Credential(
+        engagement_id=range_scope.engagement_id, principal="svc_sql@CORP.LOCAL",
+        kind=SecretKind.NT_HASH, state=CredentialState.CRACKED, source="dcsync",
+        domain="CORP.LOCAL", secret_ref=vault.put("41aed72cec76816423703d8e545eea31"),
+    )
+    launcher = engagement.lateral(_FakeLateralClient(), vault)
+    fh = launcher.move("10.5.0.30", cred)  # in range_scope's 10.5.0.0/24
+    assert fh is not None and fh.ok
+    assert fh.proof["whoami"] == "corp\\svc_sql"
+    assert engagement.session_manager.sessions(active_only=True)
+
+
 def test_load_scope_from_example_file() -> None:
     example = Path(__file__).resolve().parents[1] / "examples/engagement-range.scope.yaml"
     scope = load_scope(example)

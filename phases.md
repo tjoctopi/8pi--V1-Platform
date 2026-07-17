@@ -170,7 +170,7 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     The web-shell session is a command-exec channel; upgrading it to a Meterpreter/Sliver beacon is the
     `MsfFootholdLauncher`/Sliver path (needs msfrpcd/Sliver deployed). Also: autonomous auth/session (unblocks
     IDOR graduation) + more class oracles (deser/XXE/JWT/GraphQL).
-- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ◐ *E1+E2+E3 built + green; GATE MET LIVE (foothold→Domain Admin); native-tool wrapping + lateral execution remain*
+- **Phase E — Identity / AD / lateral depth (NodeZero-class).** ✅ *E1–E4 built + green; GATE MET LIVE (foothold→Domain Admin); lateral execution proven; native-tool wrapping is the one carry-forward*
   Native AD tooling (impacket/certipy/ldap3) → full abuse graph (Kerberoast / ADCS ESC1-8 / delegation / DCSync
   / trusts) → credential lifecycle (crack→PtH→escalate) → real lateral execution → grounded path planning over
   real edges. **Gate:** foothold → Domain Admin on the AD-forest range.
@@ -214,15 +214,31 @@ Status legend: ☐ not started · ◐ in progress · ✅ done (real, proven live
     *enumeration* over LDAP works (found the SPN), but ticket *extraction* needs a Windows DC or tooling work.
     The crack rung itself is cryptographically real (independent impacket cross-check), so the lifecycle is
     unblocked the moment a real ticket is obtainable.
-  - ⏳ Honest remaining depth (not gate-blocking): (a) **native-tool wrapping** — impacket/certipy/bloodyAD/
+  - ✅ E4 Real lateral execution (credential reuse → session on a new host) — `c2/lateral.py`: `LateralClient`
+    (the auth+exec surface; real `ImpacketLateralClient` over wmiexec/psexec/smbexec — PtH via `-hashes`, PtT via
+    a ccache — is integration-only, `# pragma: no cover`), `LateralBackend` (a `C2Backend` routed by
+    `lateral_handle`), and `LateralMovementLauncher` (reuses a reusable `Credential`, hands off to the governed
+    `FootholdRunner` to register + PROVE the session — technique-tagged T1550.002 PtH / T1550.003 PtT / T1021).
+    Secret hygiene: material is read from the vault only at the moment of use and passed in-memory to the client,
+    never into a tool arg / audit payload / log. `Engagement.lateral(client, vault)` wires it. Refuses an
+    uncracked roast blob (must crack first) and marks the principal owned on success so the graph re-plans from
+    the new host. +21 tests (676 green).
+  - ✅ **E4 PROVEN LIVE (2026-07-17):** drove the real `LateralMovementLauncher` over the real
+    `FootholdRunner`/`SessionManager`/`AuditLog` against a reachable range host (Metasploitable 10.5.0.12):
+    owned NT-hash credential → authorized as **T1550.002 (Pass-the-Hash)** → landed a tracked session → PROVED
+    it with real remote output (`whoami=root`, real `id`, `hostname=56d5de11048d`) → 5-entry hash-chained audit
+    `verify()=True`, no secret in any payload → kill-switch teardown released the session + transport. Honest
+    caveat: the exec transport was a real-command stand-in (docker exec) because this range has **no Windows
+    member server** for true wmiexec/psexec PtH; the PtH/PtT auth path is unit-tested and the impacket client is
+    integration-only (same posture as the Sliver/msfrpc transports). Script: scratchpad/e4_live_proof.py.
+  - ⏳ One carry-forward (not gate-blocking): **native-tool wrapping** — impacket/certipy/bloodyAD/
     bloodhound-python ran in range-attached containers (as the sandbox would), not yet as first-class sandboxed
     engine tools; wrap them + add sandbox file-artifact retrieval so live BloodHound collection feeds the
-    observer directly. (b) **Tooling-vs-Samba quirks:** impacket DRSUAPI DCSync and bloodhound-python collection
-    both choked on this Samba build (protocol-parse incompatibilities, NOT authorization — alice's DCSync right
-    was accepted); the reliably-executable primitive was LDAP ACL-abuse. (c) **E4 real lateral execution** over
-    C2/SOCKS (wmiexec/psexec/winrm) for multi-host forests, and on-wire credential *reuse* (PtH/PtT) — E3 owns
-    the principal in the model; landing a session as that principal is E4. Range deps left running: `ae-dc`
-    (Samba-AD), plus `ae-attacker*`/`ae-bloodyad` images and `impacket`/`bloodhound` in the venv.
+    observer directly, and stand up a Windows member host so wmiexec/psexec PtH runs on-wire. **Tooling-vs-Samba
+    quirks (recorded):** impacket DRSUAPI DCSync, bloodhound-python collection, and on-wire Kerberoast/AS-REP
+    ticket *requests* all choked on this Samba build (protocol-parse incompat / KDC behavior, NOT authorization);
+    the reliably-executable primitive was LDAP ACL-abuse. Range deps left running: `ae-dc` (Samba-AD),
+    `ae-metasploitable`, `ae-msfrpcd`, plus `ae-attacker*`/`ae-bloodyad` images.
 - **Phase F — Full adversary emulation.** ☐
   Autonomous campaign across the whole chain, adversary profiles, T2/T3 autonomy, gated evasion testing.
   **Gate:** external → Domain Admin, unattended, fully audited.

@@ -215,6 +215,36 @@ _Last updated: 2026-07-16_
 - **PR reminder (user ask):** commit on `feat/phase-e-identity-ad`; open the PR into `dev` when Phase E wraps so
   E1–E3 (and E4) land on the deployed version. Pull latest `dev` + rebase before the PR.
 
+## 2026-07-17 — Phase E4 (real lateral execution) built + proven; Phase E COMPLETE
+- **New `c2/lateral.py`** — credential reuse (PtH/PtT/valid creds) → proven session on a NEW host, mirroring the
+  msf/sliver backend pattern:
+  - `LateralClient` (Protocol: open/run/alive/close — the auth+exec surface); real `ImpacketLateralClient`
+    (`# pragma: no cover`, integration-only) runs `impacket-wmiexec/psexec/smbexec` one-shot with PtH (`-hashes
+    :<nt>`), PtT (`-k -no-pass` + KRB5CCNAME), or plaintext; opaque in-memory handle table keeps the secret out
+    of argv that could be logged externally.
+  - `LateralBackend` (a `C2Backend` routed by `lateral_handle` in Session.metadata) — so the EXISTING
+    `FootholdRunner` opens/proves/tears-down the lateral session (scope/gate/audit/kill-switch unchanged).
+  - `LateralMovementLauncher.move(host, credential, *, protocol, world_model)` — guards `is_reusable` (refuses an
+    uncracked roast blob), resolves technique (NT_HASH→T1550.002 PtH, TICKET/AES→T1550.003 PtT, PLAINTEXT→T1021),
+    reads the secret from the vault ONLY at use (in-memory, never audited), `client.open` → `runner.establish`
+    (technique-tagged) → marks principal owned so the graph re-plans from the new host.
+  - `Engagement.lateral(client, vault)` factory wires it over the engagement's FootholdRunner+SessionManager.
+    Exported from `c2` (LateralBackend/LateralClient/LateralMovementLauncher/LateralProtocol/lateral_backend).
+- **Green: 676 passed, 3 integration skips; ruff+mypy clean (173 src files).** +21 tests (tests/c2/test_lateral.py
+  + engine `test_engagement_lateral_factory`). Deploy-safe: no new runtime dep (impacket lazy/integration-only,
+  subprocess stdlib); verified `attack_engine.c2` + `attack_engine.api.app` import chain boots clean.
+- **PROVEN LIVE (2026-07-17):** real `LateralMovementLauncher`/`FootholdRunner`/`SessionManager`/`AuditLog` vs
+  reachable Metasploitable (10.5.0.12): owned NT-hash cred → authorized T1550.002 (PtH) → tracked session →
+  PROVED with real remote output (whoami=root, real id, hostname=56d5de11048d) → 5-entry hash-chained audit
+  verify()=True, no secret in payloads → kill-switch teardown released session + transport. Script:
+  scratchpad/e4_live_proof.py.
+- **Honest caveat:** the live exec transport was a real-command stand-in (`docker exec`) because THIS range has
+  no Windows member server for true wmiexec/psexec PtH; the PtH/PtT auth path is unit-tested and the impacket
+  client is integration-only (same posture as Sliver/msfrpc). To run on-wire PtH: add a Windows member host.
+- **Phase E COMPLETE (E1 abuse graph, E2 identity specialist, E3 credential lifecycle, E4 lateral execution).**
+  Gate (foothold→Domain Admin) met live; the one carry-forward is native-tool wrapping as first-class sandboxed
+  engine tools + a Windows member host. **Next: open the PR `feat/phase-e-identity-ad` → `dev`.**
+
 ## 2026-07-16 — Direction shift: the offensive depth push (living/dynamic planning)
 - **New direction (confirmed by the user):** go from starter-level to a top-tier autonomous
   offensive platform — **full adversary emulation** (external web → internal network → AD →
