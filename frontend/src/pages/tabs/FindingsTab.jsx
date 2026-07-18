@@ -7,11 +7,15 @@ import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, KV, useToast, e
 export default function FindingsTab({ eid, reload }) {
   const toast = useToast();
   const [findings, setFindings] = useState(null);
+  const [err, setErr] = useState(null);
   const [sev, setSev] = useState("all");
   const [sel, setSel] = useState(null);
   const [busy, setBusy] = useState("");
 
-  const load = useCallback(async () => setFindings(await api.findings(eid)), [eid]);
+  const load = useCallback(async () => {
+    try { setErr(null); setFindings(await api.findings(eid)); }
+    catch (e) { setErr(errMsg(e)); }
+  }, [eid]);
   useEffect(() => { load(); }, [load]);
 
   const act = async (key, fn, msg) => {
@@ -20,6 +24,7 @@ export default function FindingsTab({ eid, reload }) {
     catch (e) { toast.error(errMsg(e)); } finally { setBusy(""); }
   };
 
+  if (err) return <Empty icon={Bug} title="Couldn't load findings" hint={err} action={<Btn variant="ghost" onClick={load} data-testid="findings-retry">Retry</Btn>} />;
   if (!findings) return <Loading label="Loading findings" />;
   if (findings.length === 0) return <Empty icon={Bug} title="No findings" hint="Run a Vuln Scan and agents from the Console to generate findings." />;
 

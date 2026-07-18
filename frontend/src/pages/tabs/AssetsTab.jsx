@@ -2,17 +2,22 @@ import React, { useEffect, useState } from "react";
 import { HardDrives, Globe, Cpu, Circuitry, Bug, TreeStructure } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV, EXPLOIT, timeAgo } from "../../lib/theme";
-import { Panel, SectionTitle, Badge, Loading, Empty, Modal, KV, Spinner } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, KV, Spinner, errMsg } from "../../components/ui";
 
 const TYPE_ICON = { host: Circuitry, webapp: Globe, service: Cpu };
 const EXP = { external: "#FF00A0", internal: "#B4B4B4", unknown: "#7A7A7A" };
 
 function AssetDetail({ eid, aid }) {
   const [d, setD] = useState(null);
-  useEffect(() => { setD(null); api.assetDetail(eid, aid).then(setD); }, [eid, aid]);
+  const [derr, setDerr] = useState(null);
+  useEffect(() => { setD(null); setDerr(null); api.assetDetail(eid, aid).then(setD).catch((e) => setDerr(errMsg(e))); }, [eid, aid]);
+  if (derr) return <div className="py-10 text-center text-sm text-muted">Couldn't load asset detail: {derr}</div>;
   if (!d) return <div className="py-10 flex justify-center"><Spinner /></div>;
-  const a = d.asset;
+  const a = d.asset || {};
   const ident = a.identifiers || {};
+  const dFindings = d.findings || [];
+  const dChildren = d.children || [];
+  const dInvocations = d.invocations || [];
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
@@ -32,31 +37,31 @@ function AssetDetail({ eid, aid }) {
       </div>
 
       <div className="mt-4">
-        <div className="label mb-1.5 flex items-center gap-1.5"><Bug size={13} /> Findings on this asset ({d.findings.length})</div>
+        <div className="label mb-1.5 flex items-center gap-1.5"><Bug size={13} /> Findings on this asset ({dFindings.length})</div>
         <div className="space-y-1.5">
-          {d.findings.map((f) => (
+          {dFindings.map((f) => (
             <div key={f.id} className="flex items-center gap-2 bg-black border border-line px-3 py-2 rounded-sm">
               <Badge color={SEV[f.severity]?.color}>{SEV[f.severity]?.label}</Badge>
               <span className="text-xs text-white flex-1 truncate">{f.title}</span>
               <Badge color={EXPLOIT[f.exploitability]?.color}>{EXPLOIT[f.exploitability]?.label}</Badge>
             </div>
           ))}
-          {d.findings.length === 0 && <div className="text-xs text-muted">No findings on this asset.</div>}
+          {dFindings.length === 0 && <div className="text-xs text-muted">No findings on this asset.</div>}
         </div>
       </div>
 
-      {(d.parent || d.children.length > 0) && (
+      {(d.parent || dChildren.length > 0) && (
         <div className="mt-4">
           <div className="label mb-1.5 flex items-center gap-1.5"><TreeStructure size={13} /> Relationships</div>
           {d.parent && <div className="text-xs text-sub mono">↑ host: {d.parent.identifiers?.host || d.parent.identifiers?.ip || d.parent.identifiers?.url}</div>}
-          {d.children.map((c) => <div key={c.id} className="text-xs text-muted mono">↳ {c.identifiers?.service} :{c.identifiers?.port} ({(c.versions?.[0]?.product) || ""})</div>)}
+          {dChildren.map((c) => <div key={c.id} className="text-xs text-muted mono">↳ {c.identifiers?.service} :{c.identifiers?.port} ({(c.versions?.[0]?.product) || ""})</div>)}
         </div>
       )}
 
-      {d.invocations.length > 0 && (
+      {dInvocations.length > 0 && (
         <div className="mt-4">
           <div className="label mb-1.5">Tool activity</div>
-          {d.invocations.slice(0, 6).map((iv) => (
+          {dInvocations.slice(0, 6).map((iv) => (
             <div key={iv.id} className="flex items-center justify-between text-xs mono text-muted py-1 border-b border-white/5 last:border-0">
               <span className="text-sub">{iv.tool_id}</span><span>{iv.status}</span><span>{timeAgo(iv.started_at)}</span>
             </div>
@@ -69,9 +74,12 @@ function AssetDetail({ eid, aid }) {
 
 export default function AssetsTab({ eid }) {
   const [assets, setAssets] = useState(null);
+  const [err, setErr] = useState(null);
   const [filter, setFilter] = useState("all");
   const [sel, setSel] = useState(null);
-  useEffect(() => { api.assets(eid).then(setAssets); }, [eid]);
+  const loadAssets = React.useCallback(() => { setErr(null); api.assets(eid).then(setAssets).catch((e) => setErr(errMsg(e))); }, [eid]);
+  useEffect(() => { loadAssets(); }, [loadAssets]);
+  if (err) return <Empty icon={HardDrives} title="Couldn't load assets" hint={err} action={<Btn variant="ghost" onClick={loadAssets} data-testid="assets-retry">Retry</Btn>} />;
   if (!assets) return <Loading label="Loading asset graph" />;
   if (assets.length === 0) return <Empty icon={HardDrives} title="No assets discovered" hint="Run Sensing from the Console to populate the asset graph (C-01)." />;
 

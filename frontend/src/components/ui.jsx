@@ -273,7 +273,15 @@ export function ToastProvider({ children }) {
 }
 
 export function errMsg(e) {
-  return e?.response?.data?.detail || e?.message || "Request failed";
+  const d = e?.response?.data?.detail;
+  // FastAPI 422 returns detail as an array of {loc,msg,type}; coerce to a string
+  // so toast.error never receives a non-renderable object (React child crash).
+  if (Array.isArray(d)) {
+    const msg = d.map((x) => (typeof x === "string" ? x : x?.msg || "")).filter(Boolean).join("; ");
+    return msg || "Validation failed";
+  }
+  if (d && typeof d === "object") return d.msg || d.detail || "Request failed";
+  return d || e?.message || "Request failed";
 }
 
 export class ErrorBoundary extends React.Component {

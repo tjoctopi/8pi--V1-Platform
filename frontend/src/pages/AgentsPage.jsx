@@ -55,6 +55,7 @@ export default function AgentsPage() {
   const [sbx, setSbx] = useState([]);
   const [busy, setBusy] = useState("");
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: "", role: "offensive", max_intensity: "safe-active", tools: ["nmap"] });
 
   const load = useCallback(async () => {
@@ -75,14 +76,16 @@ export default function AgentsPage() {
     catch (e) { toast.error(errMsg(e)); } finally { setBusy(""); }
   };
   const create = async () => {
+    if (creating) return;
     if (!form.name.trim()) return toast.error("Name required");
+    setCreating(true);
     try {
       await api.createAgent({ name: form.name.trim(), role: form.role, max_intensity: form.max_intensity, tools: form.tools });
       toast.success("Agent created (dev state)");
       setOpen(false);
       setForm({ name: "", role: "offensive", max_intensity: "safe-active", tools: ["nmap"] });
       await load();
-    } catch (e) { toast.error(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); } finally { setCreating(false); }
   };
   const toggle = (t) => setForm((f) => ({ ...f, tools: f.tools.includes(t) ? f.tools.filter((x) => x !== t) : [...f.tools, t] }));
 
@@ -158,7 +161,7 @@ export default function AgentsPage() {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
-            <Btn onClick={create} data-testid="create-agent-submit">Create</Btn>
+            <Btn onClick={create} loading={creating} disabled={creating} data-testid="create-agent-submit">Create</Btn>
           </div>
         </div>
       </Modal>

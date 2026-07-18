@@ -46,6 +46,7 @@ export const api = {
   updateRoe: (id, body) => http.put(`/engagements/${id}/roe`, body).then((r) => r.data),
   signRoe: (id, signed_by) => http.post(`/engagements/${id}/roe/sign`, { signed_by }).then((r) => r.data),
   activate: (id) => http.post(`/engagements/${id}/activate`).then((r) => r.data),
+  activateTest: (id) => http.post(`/engagements/${id}/activate-test`).then((r) => r.data),
   pause: (id) => http.post(`/engagements/${id}/pause`).then((r) => r.data),
   close: (id) => http.post(`/engagements/${id}/close`).then((r) => r.data),
   halt: (id, actor_id) => http.post(`/engagements/${id}/halt`, { actor_id }).then((r) => r.data),
