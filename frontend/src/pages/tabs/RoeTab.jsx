@@ -62,8 +62,18 @@ export default function RoeTab({ eid, engagement, roe, reload }) {
   };
 
   const activate = async () => {
+    setBusy(true);
     try { await api.activate(eid); toast.success("Engagement activated"); await reload(); }
-    catch (e) { toast.error(errMsg(e)); }
+    catch (e) { toast.error(errMsg(e)); } finally { setBusy(false); }
+  };
+
+  const activateTest = async () => {
+    setBusy(true);
+    try {
+      await api.activateTest(eid);
+      toast.success("Engagement activated on test authorization");
+      await reload();
+    } catch (e) { toast.error(errMsg(e)); } finally { setBusy(false); }
   };
 
   return (
@@ -147,10 +157,16 @@ export default function RoeTab({ eid, engagement, roe, reload }) {
             An engagement cannot go <b className="text-white">active</b> without a signed, in-window RoE (SEC-01).
           </p>
           {roe.signature && engagement.status === "draft" && (
-            <Btn variant="success" icon={Play} onClick={activate} className="w-full justify-center" data-testid="activate-btn">Activate Engagement</Btn>
+            <Btn variant="success" icon={Play} onClick={activate} loading={busy} className="w-full justify-center" data-testid="activate-btn">Activate Engagement</Btn>
           )}
           {engagement.status === "active" && <Badge color="#FFFFFF" dot>ENGAGEMENT ACTIVE</Badge>}
-          {!roe.signature && <div className="text-xs text-sub mono">Sign the RoE to enable activation.</div>}
+          {!roe.signature && engagement.status === "draft" && (
+            <div className="mt-2">
+              <div className="text-xs text-sub mono mb-2">Sign the RoE to enable activation — or, on a testing deployment, run gate-free:</div>
+              <Btn variant="dark" icon={Play} onClick={activateTest} loading={busy} className="w-full justify-center" data-testid="activate-test-btn">Activate (Test Auth)</Btn>
+              <div className="text-[10px] text-muted mono mt-1.5">Needs a scope allowlist. Requires AE_ALLOW_TEST_AUTH on the server; pilot only.</div>
+            </div>
+          )}
         </Panel>
       </div>
 

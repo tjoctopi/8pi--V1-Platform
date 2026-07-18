@@ -19,12 +19,16 @@ export default function VulnTab({ eid, reload }) {
   const toast = useToast();
   const [findings, setFindings] = useState(null);
   const [cves, setCves] = useState([]);
+  const [err, setErr] = useState(null);
   const [busy, setBusy] = useState("");
 
   const load = useCallback(async () => {
-    const [f, c] = await Promise.all([api.findings(eid), api.cveCache()]);
-    setFindings(f);
-    setCves(c);
+    try {
+      setErr(null);
+      const [f, c] = await Promise.all([api.findings(eid), api.cveCache()]);
+      setFindings(f);
+      setCves(c);
+    } catch (e) { setErr(errMsg(e)); }
   }, [eid]);
   useEffect(() => { load(); }, [load]);
 
@@ -34,6 +38,7 @@ export default function VulnTab({ eid, reload }) {
     catch (e) { toast.error(errMsg(e)); } finally { setBusy(""); }
   };
 
+  if (err) return <Empty icon={ShieldWarning} title="Couldn't load vulnerability loop" hint={err} action={<Btn variant="ghost" onClick={load} data-testid="vuln-retry">Retry</Btn>} />;
   if (!findings) return <Loading label="Loading vulnerability loop" />;
 
   const vulns = findings.filter((f) => f.source === "vuln-loop");

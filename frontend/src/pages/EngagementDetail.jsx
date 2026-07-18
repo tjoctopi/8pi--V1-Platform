@@ -5,6 +5,7 @@ import {
   ArrowLeft, Warning, Play, Target,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { STATUS } from "../lib/theme";
 import { Btn, Badge, Dot, Tabs, Loading, Modal, useToast, errMsg, TextInput } from "../components/ui";
 
@@ -23,6 +24,7 @@ export default function EngagementDetail() {
   const { id } = useParams();
   const nav = useNavigate();
   const toast = useToast();
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("overview");
   const [killOpen, setKillOpen] = useState(false);
@@ -46,7 +48,7 @@ export default function EngagementDetail() {
     if (confirm !== "HALT") return toast.error('Type "HALT" to confirm');
     setBusy(true);
     try {
-      await api.halt(id, "operator@8pi.internal");
+      await api.halt(id, user?.email || user?.id || "unknown-operator");
       toast.success("Kill switch engaged — all activity halted");
       setKillOpen(false);
       setConfirm("");
