@@ -11,10 +11,27 @@ function useSize(defaultH = 560) {
   const [w, setW] = useState(0);
   useEffect(() => {
     if (!ref.current) return;
-    const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
+    const measure = () => {
+      const el = ref.current;
+      if (!el) return;
+      // clientWidth can be 0 at mount before layout settles; fall back to the
+      // measured rect and finally the parent width so the graph always sizes.
+      const width =
+        el.clientWidth ||
+        Math.round(el.getBoundingClientRect().width) ||
+        el.parentElement?.clientWidth ||
+        0;
+      if (width > 0) setW(width);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(ref.current);
-    setW(ref.current.clientWidth);
-    return () => ro.disconnect();
+    measure();
+    // Re-measure across the next frames — a tab mounted into a grid/flex parent
+    // often reports width 0 on the first tick, and the ResizeObserver may not
+    // fire again if the element size never actually changes afterward.
+    const raf = requestAnimationFrame(measure);
+    const t = setTimeout(measure, 150);
+    return () => { ro.disconnect(); cancelAnimationFrame(raf); clearTimeout(t); };
   }, []);
   return [ref, w, defaultH];
 }

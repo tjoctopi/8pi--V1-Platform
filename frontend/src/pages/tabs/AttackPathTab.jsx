@@ -36,10 +36,25 @@ function useWidth() {
   const [w, setW] = useState(0);
   useEffect(() => {
     if (!ref.current) return;
-    const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
+    const measure = () => {
+      const el = ref.current;
+      if (!el) return;
+      const width =
+        el.clientWidth ||
+        Math.round(el.getBoundingClientRect().width) ||
+        el.parentElement?.clientWidth ||
+        0;
+      if (width > 0) setW(width);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(ref.current);
-    setW(ref.current.clientWidth);
-    return () => ro.disconnect();
+    measure();
+    // Re-measure across the next frames: a tab mounted into a grid/flex parent
+    // can report width 0 on the first tick and the ResizeObserver may not fire
+    // again, leaving the globe/graph unrendered ({w > 0} gate stays false).
+    const raf = requestAnimationFrame(measure);
+    const t = setTimeout(measure, 150);
+    return () => { ro.disconnect(); cancelAnimationFrame(raf); clearTimeout(t); };
   }, []);
   return [ref, w];
 }
