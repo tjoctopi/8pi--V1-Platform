@@ -7,14 +7,29 @@ import { Panel, SectionTitle, Btn, Badge, Loading, Empty } from "../../component
 
 /* — sizing hook (SVG-free, honors container width) — */
 function useSize(defaultH = 560) {
-  const ref = useRef(null);
   const [w, setW] = useState(0);
-  useEffect(() => {
-    if (!ref.current) return;
-    const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
-    ro.observe(ref.current);
-    setW(ref.current.clientWidth);
-    return () => ro.disconnect();
+  const roRef = useRef(null);
+  // Callback ref: fires when the node actually attaches to the DOM. This matters
+  // because the component early-returns <Loading>/<Empty> while data loads, so a
+  // plain useRef + useEffect([]) would run once with ref.current === null and
+  // never re-measure once the graph div finally mounts (→ w stuck at 0, blank).
+  const ref = useCallback((node) => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    if (!node) return;
+    const measure = () => {
+      const width =
+        node.clientWidth ||
+        Math.round(node.getBoundingClientRect().width) ||
+        node.parentElement?.clientWidth ||
+        0;
+      if (width > 0) setW(width);
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    roRef.current = ro;
+    measure();
+    requestAnimationFrame(measure);
+    setTimeout(measure, 150);
   }, []);
   return [ref, w, defaultH];
 }

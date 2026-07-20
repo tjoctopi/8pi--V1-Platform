@@ -32,14 +32,28 @@ function webglOK() {
 }
 
 function useWidth() {
-  const ref = useRef(null);
   const [w, setW] = useState(0);
-  useEffect(() => {
-    if (!ref.current) return;
-    const ro = new ResizeObserver((e) => setW(e[0].contentRect.width));
-    ro.observe(ref.current);
-    setW(ref.current.clientWidth);
-    return () => ro.disconnect();
+  const roRef = useRef(null);
+  // Callback ref so measurement happens when the node attaches — robust to the
+  // component early-returning while data loads (a useEffect([]) can run with a
+  // null ref and never re-measure once the container finally mounts).
+  const ref = useCallback((node) => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    if (!node) return;
+    const measure = () => {
+      const width =
+        node.clientWidth ||
+        Math.round(node.getBoundingClientRect().width) ||
+        node.parentElement?.clientWidth ||
+        0;
+      if (width > 0) setW(width);
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    roRef.current = ro;
+    measure();
+    requestAnimationFrame(measure);
+    setTimeout(measure, 150);
   }, []);
   return [ref, w];
 }
