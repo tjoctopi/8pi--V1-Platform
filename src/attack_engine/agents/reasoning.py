@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from ..errors import BudgetExceededError
+from ..errors import AttackEngineError, BudgetExceededError
 from ..gateway.budget import TokenBudget
 from ..gateway.router import ModelGateway
 from ..gateway.types import ChatMessage
@@ -144,6 +144,11 @@ class ReasoningLoop:
         """
 
         result = ReasoningResult(stop_reason="max_steps")
+        # Signatures of actions already run successfully — so the loop never wastes a
+        # step re-running the identical tool call (e.g. crawling the same host twice)
+        # and instead progresses through the remaining tools. A call with different
+        # params/target (a genuinely new probe) has a different signature and is allowed.
+        done: set[tuple[str, str, str]] = set()
         for step in range(self._max_steps):
             if stop_when is not None and stop_when(world_model):
                 result.stop_reason = "objective_satisfied"
@@ -157,15 +162,31 @@ class ReasoningLoop:
 
             ctx = LoopContext(world_model, objective, tuple(result.steps), step, budget)
 
-            # Plan
-            plan = self._planner.propose(ctx)
-            action = self._select(plan)
+            # Plan — the LLM boundary. A failed/invalid plan (bad model output,
+            # transient gateway error) degrades this phase gracefully rather than
+            # crashing the whole loop/campaign (same posture as the Actor's guard).
+            try:
+                plan = self._planner.propose(ctx)
+                action = self._select(plan, done)
+            except BudgetExceededError:
+                result.stop_reason = "budget_exhausted"
+                break
+            except AttackEngineError as exc:
+                _log.warning("planner failed; degrading phase", error=str(exc), step=step)
+                result.stop_reason = "planner_error"
+                break
             if action is None or action.tool == FINISH_TOOL:
-                result.stop_reason = "planner_finished"
+                # Either the planner chose to finish, or every proposed action has
+                # already been run — nothing new left to try, so stop cleanly.
+                result.stop_reason = "planner_finished" if (
+                    action is not None or not plan.actions
+                ) else "exhausted"
                 break
 
             # Act → Observe → Reflect
             outcome = self._actor.act(action)
+            if outcome.ok:
+                done.add(self._sig(action))
             self._observer.observe(action, outcome, ctx)
             decision = self._reflector.reflect(action, outcome, ctx)
             result.steps.append(
@@ -177,11 +198,17 @@ class ReasoningLoop:
                     decision=decision,
                 )
             )
-            _log.debug(
+            # INFO, not DEBUG: an autonomous loop that plans + acts silently is
+            # indistinguishable from one that is stuck. Each step (which tool ran,
+            # on what, whether it succeeded, and the reflector's decision) is the
+            # operator's window into the run — and mirrors the SSE the console shows.
+            _log.info(
                 "reasoning step",
                 step=step,
                 tool=action.tool,
+                target=action.target,
                 ok=outcome.ok,
+                summary=(outcome.summary or "")[:160],
                 decision=decision.value,
             )
             if decision is StepDecision.STOP:
@@ -193,12 +220,34 @@ class ReasoningLoop:
         return result
 
     @staticmethod
-    def _select(plan: ActionPlan) -> ProposedAction | None:
-        """Pick the highest expected-value action (stable on ties by order)."""
+    def _sig(action: ProposedAction) -> tuple[str, str, str]:
+        """A stable identity for an action — same tool + target + params ⇒ same run."""
+
+        params = ", ".join(f"{k}={action.params[k]!r}" for k in sorted(action.params))
+        return (action.tool, action.target or "", params)
+
+    @classmethod
+    def _select(
+        cls, plan: ActionPlan, done: set[tuple[str, str, str]] | None = None
+    ) -> ProposedAction | None:
+        """Highest expected-value action, skipping ones already run this loop.
+
+        Skipping exact repeats (same tool + target + params) forces the loop to
+        progress through the remaining tools instead of re-running the top-ranked
+        one every step. An explicit FINISH always wins so the planner can stop. When
+        every proposed action has already run, returns ``None`` (nothing new to do).
+        """
 
         if not plan.actions:
             return None
-        return max(plan.actions, key=lambda a: a.expected_value)
+        done = done or set()
+        finish = [a for a in plan.actions if a.tool == FINISH_TOOL]
+        if finish:
+            return max(finish, key=lambda a: a.expected_value)
+        fresh = [a for a in plan.actions if cls._sig(a) not in done]
+        if not fresh:
+            return None
+        return max(fresh, key=lambda a: a.expected_value)
 
 
 class LlmPlanner:

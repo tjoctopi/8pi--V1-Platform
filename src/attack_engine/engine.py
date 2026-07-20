@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .exploit.runner import ExploitReport
     from .killchain.plan import KillChainPlan
     from .knowledge.graph_backend import GraphBackend
+    from .knowledge.worldmodel import WorldModel
     from .orchestrator.orchestrator import Orchestrator
 
 from .agents.base import Agent, AgentReport
@@ -155,6 +156,18 @@ class Engagement:
     #: Fitted probability calibrator (None ⇒ raw scores). Wired into the Verifier
     #: so a promoted finding's exploit_prob is calibrated, not a raw sigmoid.
     calibrator: Calibrator | None = None
+    #: The engagement's registered belief state — the planner/objective world model
+    #: (hypotheses, attack/AD graph, chains, owned principals). One instance per
+    #: engagement, bound to the same blackboard ``store``, so the reasoning loops and
+    #: the campaign share and grow one belief state (and the API can query it). Built
+    #: in :meth:`__post_init__` if not supplied.
+    world_model: WorldModel | None = None
+
+    def __post_init__(self) -> None:
+        if self.world_model is None:
+            from .knowledge.worldmodel import WorldModel as _WorldModel
+
+            self.world_model = _WorldModel(self.scope.engagement_id, store=self.store)
 
     def run_agent(self, spec: AgentSpec, targets: list[str]) -> AgentReport:
         agent: Agent = build_agent(spec, self.context, self.registry)

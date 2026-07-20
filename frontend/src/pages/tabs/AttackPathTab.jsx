@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, StackSimple, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary, PreviewNotice } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary } from "../../components/ui";
 
 const ROLE = {
   entry: { color: "#FFFFFF", label: "Entry Point", icon: Target },
@@ -368,9 +368,10 @@ function PathCard({ p, idx, selected, activeStep, onSelect, onPlay, onStep }) {
       onClick={() => onSelect(p)}
       data-testid={`attack-path-${p.id}`}
     >
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="h-font text-lg text-white">Path {idx + 1}</span>
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className="h-font text-lg text-white">{p.kind === "chain" ? "Kill Chain" : p.kind === "identity" ? "Domain Path" : "Path"} {idx + 1}</span>
         <Badge color={SEV[p.severity]?.color}>{SEV[p.severity]?.label}</Badge>
+        {p.is_realised && <Badge color="#FF2A2A" dot>REALISED</Badge>}
         <span className="mono text-[10px] text-muted">
           {layers.map((l, i) => (
             <span key={i}>{i > 0 ? " → " : ""}{l}</span>
@@ -381,6 +382,7 @@ function PathCard({ p, idx, selected, activeStep, onSelect, onPlay, onStep }) {
           Play Breach
         </Btn>
       </div>
+      {p.objective && <div className="text-xs text-sub mb-3 mono">▶ {p.objective}</div>}
       <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
         {p.steps.map((s, i) => {
           const R = ROLE[s.role];
@@ -457,8 +459,49 @@ function BreachHop({ selPath, activeStep, playing }) {
   );
 }
 
+function WorldModelPanel({ wm }) {
+  if (!wm) return null;
+  const c = wm.counts || {};
+  const stats = [
+    ["Hypotheses", c.hypotheses || 0], ["Graduated", c.graduated || 0],
+    ["Chains", c.chains || 0], ["Realised", c.chains_realised || 0],
+    ["Owned", c.owned_principals || 0], ["DA Paths", c.da_paths || 0],
+  ];
+  const topHyps = (wm.hypotheses || []).slice(0, 8);
+  return (
+    <Panel className="p-4" data-testid="world-model-panel">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="label text-volt">World Model</span>
+        <span className="ml-auto mono text-[10px] text-muted">{wm.reachable_assets || 0} reachable assets</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        {stats.map(([l, v]) => (
+          <div key={l} className="bg-black border border-line p-2 text-center">
+            <div className="h-font text-xl font-black text-white">{v}</div>
+            <div className="label text-[9px]">{l}</div>
+          </div>
+        ))}
+      </div>
+      {topHyps.length === 0 ? (
+        <div className="text-xs text-muted">No beliefs yet — run Sensing / Vuln Scan / Full Attack to populate the model.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {topHyps.map((h) => (
+            <div key={h.id} className="flex items-center gap-2 text-[11px] bg-black border border-line px-2 py-1.5" data-testid={`wm-hyp-${h.id}`}>
+              <span className="mono uppercase text-[9px]" style={{ color: h.finding_id ? "#FF2A2A" : "#7A7A7A" }}>{h.kind}</span>
+              <span className="text-sub truncate flex-1">{h.title}</span>
+              <span className="mono text-muted">{Math.round((h.confidence || 0) * 100)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function AttackPathTab({ eid }) {
   const [data, setData] = useState(null);
+  const [wm, setWm] = useState(null);
   const [selPath, setSelPath] = useState(null);
   const [activeStep, setActiveStep] = useState(-1);
   const [playing, setPlaying] = useState(false);
@@ -473,6 +516,7 @@ export default function AttackPathTab({ eid }) {
   const timerRef = useRef(null);
 
   useEffect(() => { api.attackPath(eid).then(setData); }, [eid]);
+  useEffect(() => { api.worldModel(eid).then(setWm).catch(() => setWm(null)); }, [eid]);
   useEffect(() => () => { esRef.current?.close(); clearInterval(timerRef.current); }, []);
 
   useEffect(() => {
@@ -546,7 +590,7 @@ export default function AttackPathTab({ eid }) {
         <div>
           <SectionTitle sub="Click to isolate on the globe · Play Breach to walk the kill-chain across ecosystem layers.">Candidate Attack Paths</SectionTitle>
           {data.paths.length === 0 ? (
-            <Empty icon={ShieldWarning} title="No path to crown jewels" hint="Run Sensing + a Vuln Scan so the engine can chain findings into a route across layers." />
+            <Empty icon={ShieldWarning} title="No path to crown jewels" hint="Press Run Full Attack (or Sensing + Vuln Scan) on the Console so the engine confirms findings and chains them into a route across layers." />
           ) : (
             <div className="space-y-3">
               {data.paths.map((p, i) => (
@@ -571,11 +615,16 @@ export default function AttackPathTab({ eid }) {
             </Btn>
           </div>
           {!shown && !streaming ? (
-            <PreviewNotice title="AI narrative not available yet">
-              The globe, footholds and attack routes above are real (built from the engine's
-              findings). The streaming AI narrative that walks the route in plain language isn't
-              wired to the engine yet — this data is not available in this build.
-            </PreviewNotice>
+            meta?.empty ? (
+              <Empty icon={ShieldWarning} title="Nothing to narrate yet"
+                hint="Run a Vuln Scan or Run Full Attack so the engine confirms findings — then Claude walks the breach route over them." />
+            ) : (
+              <div className="text-sm text-muted leading-relaxed" data-testid="attack-path-cta">
+                Press <b className="text-white">Generate Path</b> and Claude reasons over the
+                engine's real findings + attack surface (BYOM Model Gateway), streaming the most
+                probable breach route — initial access → pivots → crown jewel — in plain language.
+              </div>
+            )
           ) : (
             <div className="bg-black border border-line p-4 text-[13px] text-sub leading-relaxed max-h-[560px] overflow-y-auto" data-testid="attack-path-stream">
               {renderMd(shown)}
@@ -588,6 +637,9 @@ export default function AttackPathTab({ eid }) {
             </div>
           )}
         </Panel>
+
+        <SectionTitle sub="The engine's registered belief state — hypotheses, chains, owned principals — shared by every reasoning loop and the campaign.">World Model</SectionTitle>
+        <WorldModelPanel wm={wm} />
       </div>
     </div>
   );

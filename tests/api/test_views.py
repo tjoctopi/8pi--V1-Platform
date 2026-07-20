@@ -71,7 +71,45 @@ def test_attack_path_shape_and_roles() -> None:
 def test_attack_path_empty_is_safe() -> None:
     ap = build_attack_path([], [])
     assert ap["points"] == [] and ap["paths"] == []
-    assert ap["stats"] == {"entry": 0, "pivot": 0, "crown": 0, "paths": 0}
+    assert ap["stats"] == {"entry": 0, "pivot": 0, "crown": 0, "paths": 0, "chains": 0}
+
+
+def test_attack_path_renders_engine_chains_as_multihop_routes() -> None:
+    # A confirmed web-RCE chain (cmdi→foothold) becomes a real multi-hop route,
+    # ranked ahead of flat per-finding paths, with per-hop ATT&CK techniques.
+    assets = [{"id": "a1", "type": "webapp", "reachable": True,
+               "identifiers": {"ip": "10.5.0.12"}, "exposure": "external"}]
+    chains = [{
+        "id": "c1", "objective": "web foothold via cmdi→RCE",
+        "entry": "http://10.5.0.12:80/mutillidae/index.php?page",
+        "confirmed_depth": 2, "is_realised": True,
+        "steps": [
+            {"order": 0, "kind": "cmdi",
+             "subject": "http://10.5.0.12:80/mutillidae/index.php?page", "confirmed": True},
+            {"order": 1, "kind": "foothold",
+             "subject": "http://10.5.0.12:80/mutillidae/index.php?page", "confirmed": True},
+        ],
+    }]
+    ap = build_attack_path(assets, [], chains=chains)
+    assert ap["stats"]["chains"] == 1
+    route = ap["paths"][0]  # chain route leads
+    assert route["kind"] == "chain" and route["is_realised"] is True
+    assert [s["role"] for s in route["steps"]] == ["entry", "crown"]
+    assert route["steps"][0]["technique"]["id"] == "T1059"  # cmdi → command exec
+    assert route["steps"][0]["exploitability"] == "confirmed"
+
+
+def test_attack_path_renders_domain_admin_route() -> None:
+    ap = build_attack_path(
+        [{"id": "dc", "type": "host", "identifiers": {"ip": "10.5.0.20"}}],
+        [],
+        ad_paths=[{"start": "ALICE", "target": "DOMAIN ADMINS",
+                   "techniques": ["T1098", "T1003.006"]}],
+    )
+    assert ap["stats"]["chains"] == 1
+    route = ap["paths"][0]
+    assert route["kind"] == "identity" and route["crown_id"] == "DOMAIN ADMINS"
+    assert route["steps"][0]["role"] == "entry" and route["steps"][-1]["role"] == "crown"
 
 
 def test_report_summary_counts() -> None:

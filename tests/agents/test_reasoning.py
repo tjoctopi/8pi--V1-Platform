@@ -115,19 +115,43 @@ def test_empty_plan_finishes() -> None:
 
 
 def test_max_steps_cap() -> None:
-    class _AlwaysScan:
+    class _FreshScan:
+        # a *distinct* action each step (varying target), so the loop keeps acting
         def propose(self, ctx: LoopContext) -> ActionPlan:
-            return ActionPlan(actions=(ProposedAction(tool="scan", rationale="loop"),))
+            return ActionPlan(actions=(
+                ProposedAction(tool="scan", target=f"h{ctx.step}", rationale="loop"),
+            ))
 
     # observer that never adds leads so the planner never finishes
     class _NoopObserver:
         def observe(self, action, outcome, ctx) -> None:
             return None
 
-    loop = ReasoningLoop(_AlwaysScan(), _RecordingActor(), _NoopObserver(), max_steps=4)
+    loop = ReasoningLoop(_FreshScan(), _RecordingActor(), _NoopObserver(), max_steps=4)
     result = loop.run(_wm(), objective="x")
     assert result.stop_reason == "max_steps"
     assert result.iterations == 4
+
+
+def test_skips_already_run_action_and_stops_when_exhausted() -> None:
+    # A planner that always proposes the identical call must not spin: the loop
+    # runs it once, then has nothing new to do → stops "exhausted" (progression,
+    # not repetition — the reason a real loop moves on to other tools).
+    class _AlwaysSameScan:
+        def propose(self, ctx: LoopContext) -> ActionPlan:
+            return ActionPlan(actions=(
+                ProposedAction(tool="scan", target="h", rationale="loop"),
+            ))
+
+    class _NoopObserver:
+        def observe(self, action, outcome, ctx) -> None:
+            return None
+
+    actor = _RecordingActor()
+    loop = ReasoningLoop(_AlwaysSameScan(), actor, _NoopObserver(), max_steps=5)
+    result = loop.run(_wm(), objective="x")
+    assert result.stop_reason == "exhausted"
+    assert len(actor.calls) == 1  # ran the tool exactly once, no wasteful repeats
 
 
 def test_reflector_stuck_on_no_progress() -> None:

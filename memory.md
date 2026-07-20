@@ -3,7 +3,52 @@
 A running log of current state, decisions, and known gaps. Update this when things
 change so the next session starts with truth, not assumptions.
 
-_Last updated: 2026-07-18_
+_Last updated: 2026-07-20_
+
+## 2026-07-20 — Console now drives the REAL autonomous engine (branch `feat/console-autonomous-pipeline` off dev)
+- **Problem the user hit:** the pipeline lands a CONFIRMED foothold end-to-end via the scratchpad
+  scripts, but the **console** made no attack path / no full attack, some engagement "tools" didn't
+  work, and Red Scope looked unwired. **Root cause:** the console was wired to the LEGACY Sprint-1
+  agent-spec path (`run_agent(web_inquisitor.yaml)`), NOT the Phase A–F reasoning engine. The
+  graduation seam (web beliefs → oracle-ready PROPOSED findings) lives only in `build_web_loop`, so
+  the legacy path confirmed ~nothing → `build_attack_path` produced 0 paths. And `run_agent`/
+  `run_tool`/`create_agent`/etc. were `_unavailable()` (501). Red Scope chat/model-infer/attack-path
+  narrative were actually wired server-side but the UI still showed hardcoded "not wired yet" notices.
+- **Branch note:** current tip `feat/console-wiring-audit-roe` (ca1649f) is an ANCESTOR of `origin/dev`
+  (fb59763) — that work + phase-e/f already merged. The 10 newer dev commits touched only frontend +
+  deploy files, NOT adapter.py/app.py. So built on latest dev as `feat/console-autonomous-pipeline`.
+- **What landed (all green: full pytest + ruff + mypy, 176 src files):**
+  1. **WorldModel registered on the Engagement** (`engine.py __post_init__`) — one instance bound to the
+     blackboard `store`, shared by every reasoning loop + the campaign; `from_engagement` now uses it.
+     New API `GET /engagements/{id}/world-model` + `adapter.world_model_view` (hypotheses/chains/owned/
+     DA-paths) + a World Model panel on the Attack Path tab. (User asked for this explicitly.)
+  2. **`adapter.vuln_scan` now runs the REAL `build_web_loop`** (graduation on) + verify + correlate —
+     the same reasoning pipeline the campaign uses, so Vuln Scan actually confirms → attack path fills.
+  3. **Run Full Attack** — `adapter.run_campaign` → `AdversaryCampaign.from_engagement` (recon→web→
+     identity→DA), as a background job (`POST /engagements/{id}/campaign`, kind `campaign`) + a primary
+     console button. Runs verify/correlate after so graduated findings promote to CONFIRMED.
+  4. **`run_agent` wired** (was 501): 4 archetypes → real ops (surface-mapper→recon, web-inquisitor→web
+     loop, exploit-confirmer→verify+correlate, converter→per-finding guidance). Routed through the
+     **background job system** (kind `agent-run`, carries `agent_id`) — recon/web are minutes-long Docker
+     ops, must not block the request thread.
+  5. **Attack-path AI narrative SSE** — `GET /engagements/{id}/attack-path/stream` (was 404) → real
+     gateway narrative over real findings, streamed as deltas. Removed stale "not available" notices in
+     AttackPathTab + ConsoleTab (approvals) + RedScope (copilot chat).
+  6. **Test-scope rate limit fix** — `Scope.for_testing` set no rate limit → default 5/s throttled the
+     oracle probes ("injection screening halted by governance", seen live). Now 50/s burst 20 (memory
+     gotcha). Real scopes unchanged.
+  7. **Reasoning-loop robustness (real fix):** `ReasoningLoop.run` now degrades the phase on a planner/LLM
+     error (`StructuredOutputError`/gateway) instead of crashing the whole loop/campaign — same posture as
+     the Actor guard. A transient model hiccup no longer kills a campaign. +6 adapter tests, +reasoning.
+- **Live-verified on the range (real Claude + real Docker sandbox vs Metasploitable 10.5.0.12):** the
+  console adapter path (`open_for_testing`→`sense`→`vuln_scan`) EXECUTES end-to-end — recon finds 5 svc,
+  the real web reasoning loop plans + probes through the scope-enforcing sandbox, the shell-metachar guard
+  correctly rejects a payload and DEGRADES (no crash). NOTE: the web loop is **crawl-bound slow** on
+  Mutillidae (katana over ~1256 endpoints) — a full LFI-confirm run takes many minutes; confirm logic is
+  the unchanged, previously-proven verify()+correlate(). **Console UX follow-up:** tune web-loop
+  step/crawl bounds so Run Full Attack / Vuln Scan converge snappier.
+- **Deploy note for frontend testing:** needs `AE_ALLOW_TEST_AUTH=true` for the one-click test-auth flow.
+- **Not committed** (awaiting user go). See [[8pi-frontend-wiring]].
 
 ## 2026-07-18 — Console↔engine wiring: audit completeness, real RoE, and the stubbed actions
 - **Branch `feat/console-wiring-audit-roe`** off the `feat/phase-f-adversary` tip (NOT `dev`): dev is

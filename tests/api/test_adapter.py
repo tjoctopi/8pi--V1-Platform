@@ -209,6 +209,66 @@ def test_end_to_end_recon_produces_console_assets_and_intact_audit(
     assert verdict["count"] > 0
 
 
+def _open_signed(adapter: EngineAdapter, external_id: str) -> None:
+    scope = scope_from_roe(
+        external_id, {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+
+
+def test_world_model_registered_and_view_has_shape(adapter: EngineAdapter) -> None:
+    # Every engagement registers one WorldModel bound to its blackboard store.
+    _open_signed(adapter, "wm-1")
+    eng = adapter.engagement("wm-1")
+    assert eng.world_model is not None
+    assert eng.world_model.store is eng.store  # shared belief state, one instance
+    view = adapter.world_model_view("wm-1")
+    assert {"hypotheses", "chains", "owned_principals", "domain_admin_paths",
+            "reachable_assets", "counts"} <= view.keys()
+    assert {"hypotheses", "graduated", "chains", "chains_realised",
+            "owned_principals", "da_paths"} <= view["counts"].keys()
+
+
+def test_world_model_view_empty_when_closed(adapter: EngineAdapter) -> None:
+    view = adapter.world_model_view("never-opened")
+    assert view["counts"]["hypotheses"] == 0
+    assert view["hypotheses"] == []
+
+
+def test_run_agent_dispatch_and_guards(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "ra-1")
+    # exploit-confirmer runs verify+correlate synchronously and records a run
+    out = adapter.run_agent("ra-1", "exploit-confirmer")
+    assert out["ok"] is True
+    assert any(r["agent_name"] == "Exploit Confirmer" for r in adapter.agent_runs("ra-1"))
+    # converter is per-finding — refuses an engagement-wide run with guidance
+    with pytest.raises(AttackEngineError):
+        adapter.run_agent("ra-1", "converter")
+    # unknown archetype fails cleanly
+    with pytest.raises(AttackEngineError):
+        adapter.run_agent("ra-1", "nope")
+
+
+def test_run_agent_job_kind_dispatches(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "ra-2")
+    job = adapter.start_job("ra-2", "agent-run", agent_id="surface-mapper")
+    assert job["kind"] == "agent-run" and job["agent_id"] == "surface-mapper"
+    done = _wait_job(adapter, "ra-2")
+    assert done["status"] == "done"
+    assert len(adapter.assets("ra-2")) == 1  # recon really ran off the request thread
+
+
+def test_run_campaign_completes_and_records(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "camp-1")
+    outcome = adapter.run_campaign("camp-1", ["10.5.0.10"], max_rounds=1)
+    # mock model → loops degrade → campaign converges without reaching DA, but the
+    # governance objects are real and the run is recorded + audited.
+    assert outcome.stop_reason
+    assert outcome.audit_intact is True
+    assert any(r["agent_name"] == "Adversary Campaign" for r in adapter.agent_runs("camp-1"))
+
+
 def _wait_job(adapter: EngineAdapter, external_id: str, *, timeout: float = 8.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
