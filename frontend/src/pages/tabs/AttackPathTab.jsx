@@ -32,29 +32,28 @@ function webglOK() {
 }
 
 function useWidth() {
-  const ref = useRef(null);
   const [w, setW] = useState(0);
-  useEffect(() => {
-    if (!ref.current) return;
+  const roRef = useRef(null);
+  // Callback ref so measurement happens when the node attaches — robust to the
+  // component early-returning while data loads (a useEffect([]) can run with a
+  // null ref and never re-measure once the container finally mounts).
+  const ref = useCallback((node) => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    if (!node) return;
     const measure = () => {
-      const el = ref.current;
-      if (!el) return;
       const width =
-        el.clientWidth ||
-        Math.round(el.getBoundingClientRect().width) ||
-        el.parentElement?.clientWidth ||
+        node.clientWidth ||
+        Math.round(node.getBoundingClientRect().width) ||
+        node.parentElement?.clientWidth ||
         0;
       if (width > 0) setW(width);
     };
     const ro = new ResizeObserver(measure);
-    ro.observe(ref.current);
+    ro.observe(node);
+    roRef.current = ro;
     measure();
-    // Re-measure across the next frames: a tab mounted into a grid/flex parent
-    // can report width 0 on the first tick and the ResizeObserver may not fire
-    // again, leaving the globe/graph unrendered ({w > 0} gate stays false).
-    const raf = requestAnimationFrame(measure);
-    const t = setTimeout(measure, 150);
-    return () => { ro.disconnect(); cancelAnimationFrame(raf); clearTimeout(t); };
+    requestAnimationFrame(measure);
+    setTimeout(measure, 150);
   }, []);
   return [ref, w];
 }

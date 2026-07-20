@@ -7,31 +7,29 @@ import { Panel, SectionTitle, Btn, Badge, Loading, Empty } from "../../component
 
 /* — sizing hook (SVG-free, honors container width) — */
 function useSize(defaultH = 560) {
-  const ref = useRef(null);
   const [w, setW] = useState(0);
-  useEffect(() => {
-    if (!ref.current) return;
+  const roRef = useRef(null);
+  // Callback ref: fires when the node actually attaches to the DOM. This matters
+  // because the component early-returns <Loading>/<Empty> while data loads, so a
+  // plain useRef + useEffect([]) would run once with ref.current === null and
+  // never re-measure once the graph div finally mounts (→ w stuck at 0, blank).
+  const ref = useCallback((node) => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    if (!node) return;
     const measure = () => {
-      const el = ref.current;
-      if (!el) return;
-      // clientWidth can be 0 at mount before layout settles; fall back to the
-      // measured rect and finally the parent width so the graph always sizes.
       const width =
-        el.clientWidth ||
-        Math.round(el.getBoundingClientRect().width) ||
-        el.parentElement?.clientWidth ||
+        node.clientWidth ||
+        Math.round(node.getBoundingClientRect().width) ||
+        node.parentElement?.clientWidth ||
         0;
       if (width > 0) setW(width);
     };
     const ro = new ResizeObserver(measure);
-    ro.observe(ref.current);
+    ro.observe(node);
+    roRef.current = ro;
     measure();
-    // Re-measure across the next frames — a tab mounted into a grid/flex parent
-    // often reports width 0 on the first tick, and the ResizeObserver may not
-    // fire again if the element size never actually changes afterward.
-    const raf = requestAnimationFrame(measure);
-    const t = setTimeout(measure, 150);
-    return () => { ro.disconnect(); cancelAnimationFrame(raf); clearTimeout(t); };
+    requestAnimationFrame(measure);
+    setTimeout(measure, 150);
   }, []);
   return [ref, w, defaultH];
 }
