@@ -325,7 +325,10 @@ class AdversaryCampaign:
         from ..agents.web_specialist import build_web_loop
         from .objective import ConfidenceObjective, MapSurfaceObjective
 
-        wm = world_model or WorldModel(
+        # Prefer the engagement's registered world model so the campaign shares one
+        # belief state with any loop the operator drives directly (and with the API's
+        # world-model view). Fall back to a fresh one only for a bare engagement.
+        wm = world_model or engagement.world_model or WorldModel(
             engagement.scope.engagement_id, store=engagement.store
         )
         seed_targets(engagement, targets)

@@ -247,6 +247,13 @@ class Scope(StrictModel):
                     if authorized_techniques is not None
                     else _DEFAULT_TEST_TECHNIQUES
                 ),
+                # Verification oracles fire rapid, bounded probes (e.g. an
+                # injection screen issues many http_probes in a burst). The 5/s
+                # default throttles them so screening "halts by governance"
+                # mid-run — a false stop for a test authorization the operator
+                # explicitly opted into. Give it headroom so the autonomous
+                # pipeline runs to completion; scope/RoE enforcement is unchanged.
+                default_rate_limit=RateLimit(requests_per_sec=50, burst=20),
             ),
             authorized_by="test-operator",
             signature=TEST_AUTHORIZATION_SIGNATURE,

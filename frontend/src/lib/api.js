@@ -56,6 +56,9 @@ export const api = {
 
   // sensing / assets / map  (sense + vulnScan now start a background job)
   sense: (id) => http.post(`/engagements/${id}/sense`).then((r) => r.data),
+  // full autonomous kill chain (recon → web → identity → objective) as a job
+  campaign: (id) => http.post(`/engagements/${id}/campaign`).then((r) => r.data),
+  worldModel: (id) => http.get(`/engagements/${id}/world-model`).then((r) => r.data),
   jobs: (id) => http.get(`/engagements/${id}/jobs`).then((r) => r.data.jobs),
   engagementEventsUrl: (id) => withToken(`${API}/engagements/${id}/events`),
   assets: (id) => http.get(`/engagements/${id}/assets`).then((r) => r.data.assets),

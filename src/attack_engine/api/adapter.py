@@ -349,25 +349,88 @@ class EngineAdapter:
                          name="Surface Mapper", role="recon")
         return report
 
+    def _record_loop_run(
+        self, eid: str, *, name: str, role: str, result: Any, extra: str = ""
+    ) -> None:
+        """Record a reasoning-loop / campaign run for the Console's Agent Runs panel."""
+
+        iters = getattr(result, "iterations", 0)
+        stop = getattr(result, "stop_reason", "")
+        met = getattr(result, "objective_met", None)
+        summary = f"{iters} reasoning steps · stop={stop}"
+        if met is not None:
+            summary += f" · objective_met={met}"
+        if extra:
+            summary += f" · {extra}"
+        self._runs.setdefault(eid, []).append({
+            "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+            "agent_name": name, "role": role, "status": "completed",
+            "detection_rate": None, "started_at": utcnow().isoformat(),
+            "ended_at": utcnow().isoformat(), "summary": summary,
+            "steps": [], "detections": [], "approvals_created": 0,
+        })
+
+    def _run_web_loop(self, external_id: str, *, max_steps: int = 14) -> Any:
+        """Drive the REAL Web specialist reasoning loop over the engagement.
+
+        The loop plans web probes through the model gateway, acts through the
+        scope-enforcing Tool Runner, and graduates oracle-ready beliefs into
+        PROPOSED findings (the Phase-D "web recon → proof" seam) against the
+        engagement's registered world model. Best-effort: any loop error degrades
+        to the deterministic verify/correlate gate — it never sinks the scan.
+        """
+
+        from ..agents.web_specialist import build_web_loop
+        from ..orchestrator.controller import ObjectiveController
+        from ..orchestrator.objective import ConfidenceObjective
+
+        eng = self.engagement(external_id)
+        eid = engagement_id_for(external_id)
+        wm = eng.world_model
+        if wm is None:  # every engagement registers one in __post_init__
+            return None
+        try:
+            loop = build_web_loop(eng.context, max_steps=max_steps)
+            result = ObjectiveController(loop).pursue(
+                wm, ConfidenceObjective(kind="vulnerability", threshold=0.85),
+            )
+            self._record_loop_run(eid, name="Web Inquisitor", role="offensive", result=result)
+            return result
+        except Exception as exc:  # degrade — the oracles below are the real gate
+            self._emit(eid, "loop.degraded",
+                       {"loop": "web", "detail": f"{type(exc).__name__}: {exc}"})
+            return None
+
+    def _compose_chains(self, eng: Engagement) -> None:
+        """Compose + refresh attack chains from the world model's beliefs and the
+        CONFIRMED findings, so the attack-path view renders the REAL chained kill
+        routes (e.g. cmdi→foothold, lfi→source→creds, open-redirect→ssrf→metadata→
+        creds→foothold) rather than a flat finding list. Best-effort."""
+
+        wm = eng.world_model
+        if wm is None:
+            return
+        with contextlib.suppress(Exception):
+            from ..agents.web_chain import WebChainer
+
+            WebChainer().compose(wm)
+
     def vuln_scan(self, external_id: str) -> tuple[VerifyReport, MatchReport]:
         """Screen web surfaces, run the accuracy oracles, then correlate CVEs.
 
-        The full safe finding path: WebInquisitor actively screens any web
-        targets recon discovered (read-only injection screen), the deterministic
-        oracles promote proposed→verified, and the exploitability matcher scores
-        + correlates CVEs. Everything scope-enforced and audited.
+        The full safe finding path: the **Web specialist reasoning loop** actively
+        screens any web targets recon discovered (model-planned, read-only probes)
+        and graduates oracle-ready beliefs into PROPOSED findings; the deterministic
+        oracles then promote proposed→verified and the exploitability matcher scores
+        + correlates CVEs → CONFIRMED. Everything scope-enforced and audited. This is
+        the same reasoning pipeline the autonomous campaign runs, exposed as one step.
         """
 
         from ..netutil import web_targets
 
         eng = self.engagement(external_id)
-        eid = engagement_id_for(external_id)
-        web = web_targets(eng.store)
-        if web:
-            with contextlib.suppress(AttackEngineError):
-                web_spec = load_spec(_SPECS_DIR / "web_inquisitor.yaml")
-                report = eng.run_agent(web_spec, web)
-                self._record_run(eid, report, name="Web Inquisitor", role="offensive")
+        if web_targets(eng.store):
+            self._run_web_loop(external_id)
         # Verify + correlate independently — a single tool/rate hiccup in one
         # oracle degrades that finding, it never sinks the whole scan.
         verify = VerifyReport()
@@ -376,7 +439,116 @@ class EngineAdapter:
             verify = eng.verify()
         with contextlib.suppress(AttackEngineError):
             match = eng.correlate()
+        self._compose_chains(eng)
         return verify, match
+
+    def _scope_targets(self, external_id: str) -> list[str]:
+        """The engagement's authorized targets (hosts + CIDRs) from its scope."""
+
+        eid = engagement_id_for(external_id)
+        scope = self._scopes.get(eid)
+        if scope is None:
+            return []
+        return [*scope.allowed_hosts, *scope.allowed_cidrs]
+
+    def run_campaign(
+        self, external_id: str, targets: list[str] | None = None, *, max_rounds: int = 2
+    ) -> Any:
+        """Run the autonomous adversary campaign — the full kill chain.
+
+        Drives the REAL recon → web → identity specialists via
+        :class:`~attack_engine.orchestrator.adversary.AdversaryCampaign`, expanding
+        the frontier toward the goal (reach Domain Admin) round by round, sharing the
+        engagement's registered world model. Governed (kill-switch/budget) + audited
+        (``campaign.start``/``campaign.complete``). Runs verify+correlate afterwards so
+        graduated findings promote to CONFIRMED and the attack path reflects the run.
+        Returns the :class:`CampaignOutcome`.
+        """
+
+        from ..orchestrator.adversary import AdversaryCampaign
+
+        eng = self.engagement(external_id)
+        eid = engagement_id_for(external_id)
+        tgts = targets or self._scope_targets(external_id)
+        campaign = AdversaryCampaign.from_engagement(
+            eng, targets=tgts, max_rounds=max_rounds,
+        )
+        self._emit(eid, "campaign.started", {"targets": tgts, "goal": campaign.goal.describe()})
+        outcome = campaign.run()
+        # Promote graduated findings: the specialists graduate PROPOSED findings;
+        # the deterministic oracles + correlator turn them into CONFIRMED (rule #1).
+        with contextlib.suppress(AttackEngineError):
+            eng.verify()
+        with contextlib.suppress(AttackEngineError):
+            eng.correlate()
+        self._compose_chains(eng)
+        self._runs.setdefault(eid, []).append({
+            "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+            "agent_name": "Adversary Campaign", "role": "offensive",
+            "status": "completed", "detection_rate": None,
+            "started_at": utcnow().isoformat(), "ended_at": utcnow().isoformat(),
+            "summary": (
+                f"goal_reached={outcome.goal_reached} · rounds={outcome.rounds} · "
+                f"stop={outcome.stop_reason} · {outcome.reachable_hosts} hosts · "
+                f"{len(outcome.owned_frontier)} principals owned · "
+                f"{outcome.autonomous_actions} autonomous / {outcome.gated_actions} gated"
+            ),
+            "steps": [
+                {"phase": p.name, "target": p.objective, "status":
+                 "completed" if p.met else "running", "result": p.stop_reason}
+                for p in outcome.phases
+            ],
+            "detections": [], "approvals_created": 0,
+        })
+        self._emit(eid, "campaign.finished",
+                   {"goal_reached": outcome.goal_reached, "rounds": outcome.rounds,
+                    "stop_reason": outcome.stop_reason})
+        return outcome
+
+    def run_agent(self, external_id: str, agent_id: str) -> dict[str, Any]:
+        """Dispatch a built-in archetype to its REAL specialist operation.
+
+        Maps the console's four archetypes onto the reasoning engine: surface-mapper
+        → recon, web-inquisitor → web reasoning loop + oracles, exploit-confirmer →
+        verify + correlate, converter → remediation (per-finding, from the Findings
+        tab). Everything scope-enforced, gated, and audited by the engine.
+        """
+
+        eid = engagement_id_for(external_id)
+        if agent_id in ("surface-mapper", "surface_mapper"):
+            self.sense(external_id, self._scope_targets(external_id))
+        elif agent_id in ("web-inquisitor", "web_inquisitor"):
+            self.vuln_scan(external_id)
+        elif agent_id in ("exploit-confirmer", "exploit_confirmer"):
+            eng = self.engagement(external_id)
+            verify = VerifyReport()
+            match = MatchReport()
+            with contextlib.suppress(AttackEngineError):
+                verify = eng.verify()
+            with contextlib.suppress(AttackEngineError):
+                match = eng.correlate()
+            self._runs.setdefault(eid, []).append({
+                "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+                "agent_name": "Exploit Confirmer", "role": "offensive",
+                "status": "completed", "detection_rate": None,
+                "started_at": utcnow().isoformat(), "ended_at": utcnow().isoformat(),
+                "summary": (
+                    f"{verify.verified} verified · {verify.rejected} rejected · "
+                    f"{match.cves_confirmed} CVEs correlated"
+                ),
+                "steps": [], "detections": [], "approvals_created": 0,
+            })
+        elif agent_id in ("converter", "remediator"):
+            # Remediation is per-finding (propose-only); the console drives it from
+            # the Findings tab. Nothing to run engagement-wide here.
+            raise AttackEngineError(
+                "The Converter proposes remediations per finding — use 'Remediate' on "
+                "a finding in the Findings tab."
+            )
+        else:
+            raise AttackEngineError(f"unknown agent {agent_id!r}")
+        return {"ok": True, "agent_id": agent_id,
+                "runs": self.agent_runs(external_id)[:1]}
 
     # ── background jobs + live events ───────────────────────────────────────
     def _route_event(self, event: Event) -> None:
@@ -401,14 +573,15 @@ class EngineAdapter:
                               "emitted_by": "api", "payload": payload})
 
     def start_job(
-        self, external_id: str, kind: str, targets: list[str] | None = None
+        self, external_id: str, kind: str, targets: list[str] | None = None,
+        *, agent_id: str | None = None,
     ) -> dict[str, Any]:
-        """Start recon ('sense') or 'vuln-scan' on a worker thread.
+        """Start a long op ('sense'/'vuln-scan'/'campaign'/'agent-run') on a worker.
 
         Returns immediately with a job record so the HTTP request never blocks on
-        a minutes-long, Docker-spawning scan. Progress streams over the event
-        queue; poll :meth:`jobs` (or subscribe to the SSE stream) for completion.
-        Refuses a second concurrent job for the same engagement.
+        a minutes-long, Docker- and model-spawning scan. Progress streams over the
+        event queue; poll :meth:`jobs` (or subscribe to the SSE stream) for
+        completion. Refuses a second concurrent job for the same engagement.
         """
 
         eid = engagement_id_for(external_id)
@@ -420,7 +593,7 @@ class EngineAdapter:
             job = {
                 "id": f"job-{len(self._jobs.get(eid, [])) + 1}", "kind": kind,
                 "status": "running", "started_at": time.time(),
-                "ended_at": None, "detail": "",
+                "ended_at": None, "detail": "", "agent_id": agent_id,
             }
             self._jobs.setdefault(eid, []).append(job)
         self._emit(eid, "job.started", {"job": job["id"], "kind": kind})
@@ -428,7 +601,10 @@ class EngineAdapter:
             target=self._run_job, args=(external_id, job, kind, targets or []),
             daemon=True,
         ).start()
-        return job
+        # Return a snapshot of the just-created job (status "running"), not the live
+        # dict the worker thread mutates — otherwise a fast worker can flip it to
+        # "done" before the caller reads it. Live status is polled via :meth:`jobs`.
+        return dict(job)
 
     def _run_job(
         self, external_id: str, job: dict[str, Any], kind: str, targets: list[str]
@@ -439,6 +615,10 @@ class EngineAdapter:
                 self.sense(external_id, targets)
             elif kind == "vuln-scan":
                 self.vuln_scan(external_id)
+            elif kind == "campaign":
+                self.run_campaign(external_id, targets)
+            elif kind == "agent-run":
+                self.run_agent(external_id, job.get("agent_id") or "")
             else:
                 raise AttackEngineError(f"unknown job kind {kind!r}")
             job["status"] = "done"
@@ -798,6 +978,15 @@ class EngineAdapter:
     def agent_runs(self, external_id: str) -> list[dict[str, Any]]:
         return list(reversed(self._runs.get(engagement_id_for(external_id), [])))
 
+    def agent_run(self, run_id: str) -> dict[str, Any] | None:
+        """A single recorded agent/campaign run by id (across open engagements)."""
+
+        for runs in self._runs.values():
+            for r in runs:
+                if r["id"] == run_id:
+                    return r
+        return None
+
     # ── human approvals (gated actions over HTTP) ──────────────────────────
     def approvals(
         self, external_id: str, status: str | None = None
@@ -925,7 +1114,155 @@ class EngineAdapter:
         return views.build_threat_map(self.assets(external_id), self.findings(external_id))
 
     def attack_path(self, external_id: str) -> dict[str, Any]:
-        return views.build_attack_path(self.assets(external_id), self.findings(external_id))
+        # Feed the REAL engine routes (WebChainer attack chains + AD Domain-Admin
+        # paths) into the view so the console renders the actual chained kill chain,
+        # not just a flat per-finding list.
+        chains: list[dict[str, Any]] = []
+        ad_paths: list[dict[str, Any]] = []
+        if self.is_open(external_id):
+            wm = self.engagement(external_id).world_model
+            if wm is not None:
+                with contextlib.suppress(Exception):
+                    chains = [
+                        {"id": c.id, "objective": c.objective, "entry": c.entry_subject,
+                         "confirmed_depth": c.confirmed_depth, "is_realised": c.is_realised,
+                         "steps": [{"order": s.order, "kind": s.kind, "subject": s.subject,
+                                    "confirmed": s.confirmed}
+                                   for s in sorted(c.steps, key=lambda s: s.order)]}
+                        for c in wm.chains()
+                    ]
+                with contextlib.suppress(Exception):
+                    ad_paths = [
+                        {"start": p.start, "target": p.target,
+                         "techniques": [e.technique for e in p.edges]}
+                        for p in wm.domain_admin_paths()
+                    ]
+        return views.build_attack_path(
+            self.assets(external_id), self.findings(external_id),
+            chains=chains, ad_paths=ad_paths,
+        )
+
+    def world_model_view(self, external_id: str) -> dict[str, Any]:
+        """Serialize the engagement's registered world model for the console.
+
+        The belief state the reasoning loops + campaign share and grow: open/graduated
+        hypotheses (with fused confidence + provenance), attack chains and how far each
+        is realised, owned principals, and any surfaced Domain-Admin paths. Empty, valid
+        shape when the engagement is closed — never an error.
+        """
+
+        empty = {"hypotheses": [], "chains": [], "owned_principals": [],
+                 "domain_admin_paths": [], "reachable_assets": 0,
+                 "counts": {"hypotheses": 0, "graduated": 0, "chains": 0,
+                            "chains_realised": 0, "owned_principals": 0, "da_paths": 0}}
+        if not self.is_open(external_id):
+            return empty
+        wm = self.engagement(external_id).world_model
+        if wm is None:
+            return empty
+        hyps = wm.hypotheses()
+        chains = wm.chains()
+        da_paths = wm.domain_admin_paths()
+        return {
+            "hypotheses": [
+                {"id": h.id, "subject": h.subject, "kind": h.kind, "title": h.title,
+                 "status": h.status.value, "confidence": round(h.confidence, 3),
+                 "observations": len(h.observations), "finding_id": h.finding_id,
+                 "suggested_tools": list(h.suggested_tools)}
+                for h in sorted(hyps, key=lambda x: x.confidence, reverse=True)[:100]
+            ],
+            "chains": [
+                {"id": c.id, "objective": c.objective, "entry": c.entry_subject,
+                 "steps": [{"kind": s.kind, "subject": s.subject,
+                            "confirmed": s.confirmed} for s in
+                           sorted(c.steps, key=lambda s: s.order)],
+                 "confirmed_depth": c.confirmed_depth, "is_realised": c.is_realised}
+                for c in chains
+            ],
+            "owned_principals": list(wm.owned_principals),
+            "domain_admin_paths": [
+                {"start": p.start, "target": p.target, "length": len(p.edges),
+                 "techniques": [e.technique for e in p.edges]}
+                for p in da_paths
+            ],
+            "reachable_assets": len(wm.reachable_assets()),
+            "counts": {
+                "hypotheses": len(hyps),
+                "graduated": sum(1 for h in hyps if h.finding_id),
+                "chains": len(chains),
+                "chains_realised": sum(1 for c in chains if c.is_realised),
+                "owned_principals": len(wm.owned_principals),
+                "da_paths": len(da_paths),
+            },
+        }
+
+    _ATTACK_PATH_SYSTEM = (
+        "You are the 8π attack-path narrator for an authorized red-team engagement. "
+        "Given the engine's confirmed/observed findings and the asset attack surface, "
+        "explain — as a real adversary would reason — the most likely breach route from "
+        "an external entry point to the crown jewels: which finding gives initial access, "
+        "how it chains to the next hop, and the impact at the objective. Ground every "
+        "claim in the provided findings (cite titles/CVEs); never invent a finding. Use "
+        "short markdown sections. Be concise, technical, and honest about uncertainty."
+    )
+
+    def attack_path_narrative(
+        self, external_id: str, *, actor: str = "operator"
+    ) -> dict[str, Any]:
+        """Model-generated narrative of the breach route over the REAL findings (BYOM).
+
+        Builds the prompt from the engine's findings + attack-path surface + world-model
+        beliefs and routes it through the gateway (rule #4). Returns the full text + route
+        + usage; the API streams it as deltas. Honest when there is nothing to narrate.
+        """
+
+        from ..gateway.types import ChatMessage
+        from ..schemas.agentspec import ModelTier
+
+        eid = engagement_id_for(external_id)
+        findings = self.findings(external_id) if self.is_open(external_id) else []
+        ap = self.attack_path(external_id)
+        if not findings and not ap.get("paths"):
+            return {"text": "", "route": "none", "empty": True,
+                    "usage": {"token_in": 0, "token_out": 0, "latency_ms": 0, "cost": 0}}
+        sev_rank = {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0}
+        top = sorted(
+            findings,
+            key=lambda f: (f.get("exploitability") == "confirmed",
+                           sev_rank.get(str(f.get("severity") or ""), 0)),
+            reverse=True,
+        )[:25]
+        lines = []
+        for f in top:
+            cves = f.get("cve_refs") or []
+            lines.append(
+                f"- {f.get('title')} | sev={f.get('severity')} | "
+                f"exploitability={f.get('exploitability')} | target={f.get('asset_id') or '?'}"
+                f"{' | ' + ', '.join(cves) if cves else ''}"
+            )
+        context = (
+            f"Engagement findings ({len(findings)} total, showing {len(top)}):\n"
+            + "\n".join(lines)
+            + f"\n\nAttack surface: {ap['stats']['entry']} entry points, "
+            f"{ap['stats']['crown']} crown jewels, {ap['stats']['paths']} candidate paths."
+        )
+        convo = [
+            ChatMessage.system(self._ATTACK_PATH_SYSTEM),
+            ChatMessage.user(
+                "Narrate the most probable breach path from the findings below.\n\n"
+                + context
+            ),
+        ]
+        resp = self._engine.gateway.complete(
+            convo, tier=ModelTier.FRONTIER, engagement_id=eid, actor=actor
+        )
+        return {
+            "text": resp.text,
+            "route": resp.tier or resp.model,
+            "usage": {"token_in": resp.usage.prompt_tokens,
+                      "token_out": resp.usage.completion_tokens,
+                      "latency_ms": 0, "cost": 0},
+        }
 
     def report_summary(self, external_id: str) -> dict[str, Any]:
         verdict = self.audit_verify(external_id)

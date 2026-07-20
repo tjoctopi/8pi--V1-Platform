@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   MagnifyingGlass, ShieldWarning, Robot, CaretDown, CaretRight, Check, X as XIcon,
-  Gavel, Warning,
+  Gavel, Warning, Lightning,
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Select, PreviewNotice, useToast, errMsg } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Select, useToast, errMsg } from "../../components/ui";
 import { useAuth, roleAtLeast } from "../../lib/auth";
 
 function StepRow({ s }) {
@@ -129,8 +129,12 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
 
       {/* pipeline */}
       <Panel className="p-5">
-        <SectionTitle sub="Drive the engagement. Every action is scope-checked and audited.">Live Console</SectionTitle>
+        <SectionTitle sub="Drive the engagement — one autonomous kill chain, or step by step. Every action is scope-checked, gated, and audited.">Live Console</SectionTitle>
         <div className="flex flex-wrap items-center gap-3">
+          <Btn icon={Lightning} variant="primary" loading={busy === "campaign"} disabled={engagement.halted || !canWrite || !!busy}
+            onClick={() => actJob("campaign", "campaign", () => api.campaign(eid), "Full attack complete — findings & attack path updated")}
+            data-testid="run-campaign-btn">Run Full Attack</Btn>
+          <div className="h-6 w-px bg-white/10" />
           <Btn icon={MagnifyingGlass} variant="dark" loading={busy === "sense"} disabled={engagement.halted || !canWrite || !!busy}
             onClick={() => actJob("sense", "sense", () => api.sense(eid), "Sensing complete — asset graph updated")} data-testid="run-sensing-btn">Run Sensing</Btn>
           <Btn icon={ShieldWarning} variant="dark" loading={busy === "vuln"} disabled={engagement.halted || !canWrite || !!busy}
@@ -141,10 +145,10 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
             {authorized.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.role}</option>)}
           </Select>
           <Btn icon={Robot} loading={busy === "run"} disabled={!pick || engagement.halted || !canWrite || !!busy}
-            onClick={() => act("run", () => api.runAgent(eid, pick), "Agent run complete")} data-testid="run-agent-btn">Run Agent</Btn>
+            onClick={() => actJob("run", "agent-run", () => api.runAgent(eid, pick), "Agent run complete")} data-testid="run-agent-btn">Run Agent</Btn>
         </div>
 
-        {(busy === "sense" || busy === "vuln" || live.length > 0) && (
+        {(busy === "sense" || busy === "vuln" || busy === "campaign" || busy === "run" || live.length > 0) && (
           <div className="mt-4 border border-line bg-ink" data-testid="live-feed">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-line">
               <span className="w-2 h-2 rounded-full bg-info blink" />
@@ -171,11 +175,6 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
           right={<Badge color={pending.length ? "#B4B4B4" : "#FFFFFF"} dot>{pending.length} PENDING</Badge>}>
           Approval Gate
         </SectionTitle>
-        <PreviewNotice className="mb-3">
-          Sense and Vuln Scan above are live against the real engine. Human approval gates and
-          one-click agent-run dispatch aren't wired yet — those are not available in this build
-          (the engine enforces gates today via signed scope + kill switch).
-        </PreviewNotice>
         {pending.length === 0 ? (
           <Panel className="p-6"><div className="text-sm text-muted">No actions awaiting approval.</div></Panel>
         ) : (

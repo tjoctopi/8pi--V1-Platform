@@ -29,6 +29,7 @@ _LAYERS = {
     "web": {"label": "Web Apps", "color": _INFO},
     "host": {"label": "Hosts", "color": _WHITE},
     "service": {"label": "Services", "color": _MUTED},
+    "identity": {"label": "Identity / AD", "color": _INCIDENT},
 }
 
 
@@ -157,8 +158,124 @@ def _geo_for(index: int, total: int) -> tuple[float, float]:
     return lat, lng
 
 
+# Chain-rung / AD-edge class → ATT&CK technique shown on each hop of a real route.
+_KIND_TECH: dict[str, tuple[str, str, str]] = {
+    "open-redirect": ("T1190", "Open Redirect", "initial-access"),
+    "ssrf": ("T1090", "Server-Side Request Forgery", "discovery"),
+    "cloud-metadata": ("T1552.005", "Cloud Instance Metadata", "credential-access"),
+    "metadata": ("T1552.005", "Cloud Instance Metadata", "credential-access"),
+    "creds": ("T1552", "Unsecured Credentials", "credential-access"),
+    "foothold": ("T1190", "Foothold — Exploit Public-Facing App", "initial-access"),
+    "lfi": ("T1005", "Local File Inclusion / Read", "collection"),
+    "source": ("T1083", "Source Disclosure", "discovery"),
+    "sqli": ("T1190", "SQL Injection", "initial-access"),
+    "ssti": ("T1059", "Template Injection → RCE", "execution"),
+    "cmdi": ("T1059", "OS Command Injection", "execution"),
+    "rce": ("T1059", "Remote Code Execution", "execution"),
+    "xss": ("T1059.007", "Cross-Site Scripting", "execution"),
+    "idor": ("T1190", "Insecure Direct Object Reference", "initial-access"),
+}
+
+
+def _host_of(subject: str) -> str:
+    """Host portion of an injection-point URL / ``host:port`` / bare host."""
+
+    from urllib.parse import urlsplit
+
+    subject = (subject or "").strip()
+    if "://" in subject:
+        return urlsplit(subject).hostname or subject
+    return subject.split("/")[0].split("?")[0].split(":")[0]
+
+
+def _chain_paths(
+    chains: list[dict[str, Any]], geo: dict[str, tuple[float, float]]
+) -> list[dict[str, Any]]:
+    """Turn each engine ``AttackChain`` into a real multi-hop route the console
+    renders as a kill chain (entry vuln → escalation rungs → foothold/objective)."""
+
+    default = next(iter(geo.values()), (20.0, 0.0))
+    out: list[dict[str, Any]] = []
+    for ch in chains:
+        rungs = ch.get("steps") or []
+        if not rungs:
+            continue
+        host = _host_of(ch.get("entry") or rungs[0].get("subject", ""))
+        slat, slng = geo.get(host, default)
+        n = len(rungs)
+        steps = []
+        for i, s in enumerate(rungs):
+            kind = s.get("kind", "")
+            tid, tname, phase = _KIND_TECH.get(kind, ("T1190", kind or "step", "initial-access"))
+            confirmed = bool(s.get("confirmed"))
+            steps.append({
+                "role": "entry" if i == 0 else ("crown" if i == n - 1 else "pivot"),
+                "label": f"{kind}: {s.get('subject', host)}",
+                "layer": "web", "layer_label": _LAYERS["web"]["label"],
+                "layer_color": _LAYERS["web"]["color"], "geo": [slat, slng],
+                "asset_id": host,
+                "technique": {"id": tid, "phase": phase, "framework": "ATT&CK", "name": tname},
+                "cve_refs": [], "finding_title": s.get("subject", ""),
+                "severity": "crit" if confirmed else "high",
+                "exploitability": "confirmed" if confirmed else "reachable",
+            })
+        depth = int(ch.get("confirmed_depth", 0))
+        out.append({
+            "id": f"chain-{ch.get('id', len(out))}",
+            "severity": "crit" if ch.get("is_realised") else ("high" if depth else "med"),
+            "score": round((depth + 1) / (n + 1), 2),
+            "layers_traversed": ["web"], "steps": steps,
+            "entry_id": host, "crown_id": host,
+            "objective": ch.get("objective", ""),
+            "is_realised": bool(ch.get("is_realised")),
+            "kind": "chain",
+        })
+    return out
+
+
+def _ad_paths(
+    ad_paths: list[dict[str, Any]], geo: dict[str, tuple[float, float]]
+) -> list[dict[str, Any]]:
+    """Turn each identity ``ADAttackPath`` into an owned-principal → Domain-Admin route."""
+
+    default = next(iter(geo.values()), (20.0, 0.0))
+    out: list[dict[str, Any]] = []
+    for i, p in enumerate(ad_paths):
+        techs = p.get("techniques") or []
+        start, target = p.get("start", "principal"), p.get("target", "Domain Admins")
+        lat, lng = default
+        hops = [start, *[f"→ {t}" for t in techs], target]
+        n = len(hops)
+        steps = []
+        for j, label in enumerate(hops):
+            steps.append({
+                "role": "entry" if j == 0 else ("crown" if j == n - 1 else "pivot"),
+                "label": label,
+                "layer": "identity", "layer_label": _LAYERS["identity"]["label"],
+                "layer_color": _LAYERS["identity"]["color"], "geo": [lat, lng],
+                "asset_id": start,
+                "technique": {"id": techs[j - 1] if 0 < j <= len(techs) else "T1078",
+                              "phase": "privilege-escalation", "framework": "ATT&CK",
+                              "name": "AD abuse"},
+                "cve_refs": [], "finding_title": label,
+                "severity": "crit", "exploitability": "confirmed",
+            })
+        out.append({
+            "id": f"ad-{i}", "severity": "crit", "score": 1.0,
+            "layers_traversed": ["identity"], "steps": steps,
+            "entry_id": start, "crown_id": target,
+            "objective": f"Domain compromise: {start} → {target}",
+            "is_realised": True, "kind": "identity",
+        })
+    return out
+
+
 def build_attack_path(
-    assets: list[dict[str, Any]], findings: list[dict[str, Any]]
+    assets: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+    *,
+    chains: list[dict[str, Any]] | None = None,
+    ad_paths: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     by_asset = _findings_by_asset(findings)
     points: list[dict[str, Any]] = []
@@ -241,6 +358,12 @@ def build_attack_path(
                 "path_id": pid, "severity": sev, "from_layer": "web", "to_layer": "host",
             })
 
+    # Real chained routes from the engine (WebChainer AttackChains + AD DA paths)
+    # lead — a multi-hop kill chain (entry → escalation → foothold/Domain Admin) —
+    # with the flat per-finding routes kept after them as supporting detail.
+    real_paths = _chain_paths(chains or [], geo) + _ad_paths(ad_paths or [], geo)
+    paths = real_paths + paths
+
     layer_stats = []
     for key, meta in _LAYERS.items():
         members = [p for p in points if p["layer"] == key]
@@ -259,7 +382,7 @@ def build_attack_path(
         "entry_points": [p["id"] for p in points if p["role"] == "entry"],
         "crown_jewels": crown_ids,
         "stats": {"entry": entry, "pivot": max(pivot, 0), "crown": crown,
-                  "paths": len(paths)},
+                  "paths": len(paths), "chains": len(real_paths)},
     }
 
 

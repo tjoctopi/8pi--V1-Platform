@@ -6,13 +6,18 @@ No Mongo, no external services: users + engagement metadata persist in SQLite
 (:class:`~attack_engine.api.store.ShellStore`); scope, findings, gates and the
 hash-chained audit log live in the engine.
 
-Wiring status:
-* **Phase 1 (live now):** auth, engagement lifecycle, RoE draft + signing,
-  recon (sense), assets, verify+correlate (vuln-scan), findings, audit + verify,
-  stats — all driven by the real engine.
-* **Phase 2–4 (placeholders):** tools/agents/approvals/model/report/attack-path/
-  threat-map/red-scope return valid empty shapes so the console renders, and are
-  filled in as those slices land.
+Wiring status (all driven by the REAL engine):
+* auth, engagement lifecycle, RoE draft + signing/test-auth;
+* recon (sense), assets, threat-map;
+* the autonomous pipeline — vuln-scan (web reasoning loop → oracle graduation →
+  verify + correlate), Run Full Attack (``AdversaryCampaign``), per-archetype
+  agent runs — all off the request thread as background jobs with live SSE;
+* findings, remediate/re-test, CVE cache + refresh;
+* attack-path + its live model-generated narrative, and the registered world model;
+* human approval gates, audit + chain verify, model gateway + Red Scope copilot,
+  report (JSON/HTML/PDF), dashboard stats.
+A handful of power-user / custom-agent-lifecycle actions are intentionally not part
+of this build (fixed reasoning archetypes, rule #3) and return a clear 501.
 
 Run:  ``uvicorn attack_engine.api.app:app --reload`` (or ``python -m
 attack_engine.api.app``). Point the console's ``REACT_APP_BACKEND_URL`` at it.
@@ -21,6 +26,7 @@ attack_engine.api.app``). Point the console's ``REACT_APP_BACKEND_URL`` at it.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import secrets
 from collections.abc import AsyncIterator
@@ -31,6 +37,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ..errors import AttackEngineError
 from .adapter import EngineAdapter, scope_from_roe
@@ -508,6 +515,27 @@ def create_app() -> FastAPI:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"job_id": job["id"], "status": job["status"], "kind": "vuln-scan"}
 
+    @api.post("/engagements/{eid}/campaign")
+    async def campaign(
+        eid: str, _: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Run the full autonomous kill chain (recon → web → identity → objective).
+
+        Drives the real :class:`AdversaryCampaign` on a background worker (Docker- and
+        model-spawning, minutes-long) so the request never blocks. Progress streams over
+        the engagement SSE channel; poll ``/jobs`` for completion. Scope-enforced, gated,
+        and audited by the engine.
+        """
+
+        doc = _load(eid)
+        _require_open(eid)
+        targets = doc["roe"].get("scope_allowlist") or doc.get("estate", {}).get("seeds", [])
+        try:
+            job = adapter().start_job(eid, "campaign", targets)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "campaign"}
+
     @api.get("/engagements/{eid}/jobs")
     async def jobs(eid: str) -> dict[str, Any]:
         _load(eid)
@@ -540,7 +568,7 @@ def create_app() -> FastAPI:
         _load(eid)
         return adapter().audit_verify(eid)
 
-    # ── Phase 2–4 placeholders (valid empty shapes so the console renders) ───
+    # ── tool / agent catalog (real registry data) ───────────────────────────
     @api.get("/tools")
     async def tools() -> dict[str, Any]:
         registry = adapter().engine.registry
@@ -698,6 +726,50 @@ def create_app() -> FastAPI:
                     "stats": {"entry": 0, "crown": 0, "pivot": 0, "paths": 0}}
         return adapter().attack_path(eid)
 
+    @api.get("/engagements/{eid}/world-model")
+    async def world_model(eid: str) -> dict[str, Any]:
+        _load(eid)
+        return adapter().world_model_view(eid)
+
+    @api.get("/engagements/{eid}/attack-path/stream")
+    async def attack_path_stream(
+        eid: str, user: dict[str, Any] = Depends(get_current_user)
+    ) -> StreamingResponse:
+        """SSE narrative of the breach route, generated live by the BYOM gateway.
+
+        Streams the model's reasoning over the engine's real findings as ``delta``
+        events, then a final ``done`` event with the route + usage. Honest empty
+        notice when there is nothing to narrate yet.
+        """
+
+        _load(eid)
+
+        async def _gen() -> AsyncIterator[str]:
+            yield "retry: 3000\n\n"
+            try:
+                result = await run_in_threadpool(
+                    adapter().attack_path_narrative, eid, actor=user["email"]
+                )
+            except AttackEngineError as exc:
+                yield f"data: {json.dumps({'done': True, 'error': str(exc)})}\n\n"
+                return
+            text = result.get("text") or ""
+            done: dict[str, Any] = {"done": True, "route": result.get("route"),
+                                    "usage": result.get("usage")}
+            if not text:
+                done["empty"] = True
+                yield f"data: {json.dumps(done)}\n\n"
+                return
+            # chunk the model output into deltas so the console renders it live
+            for i in range(0, len(text), 24):
+                yield f"data: {json.dumps({'delta': text[i:i + 24]})}\n\n"
+            yield f"data: {json.dumps(done)}\n\n"
+
+        return StreamingResponse(
+            _gen(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     def _build_report(eid: str) -> dict[str, Any]:
         doc = _load(eid)
         findings = adapter().findings(eid) if adapter().is_open(eid) else []
@@ -748,9 +820,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
         return detail
 
-    # ── not-yet-wired actions: fail cleanly with a clear message (501), never a
-    #    silent 404, so the console shows "not available yet" instead of breaking.
-    _NOT_WIRED = "Not available in this build yet — wired to the engine in a later phase."
+    # ── actions intentionally not part of this build: fail cleanly (501) with an
+    #    honest reason, never a silent 404. The platform runs fixed reasoning
+    #    archetypes (rule #3: roles, not user-created agent clones), so there is no
+    #    custom-agent create/promote/sandbox lifecycle, and direct ad-hoc tool
+    #    execution is deliberately not exposed (tools run inside governed agent runs).
+    _NOT_WIRED = (
+        "Not part of this build: the platform runs fixed reasoning archetypes and "
+        "governed agent/campaign runs — there is no custom-agent lifecycle or ad-hoc "
+        "direct tool execution. Use Run Full Attack / Run Agent / the RoE tool allowlist."
+    )
 
     def _unavailable() -> NoReturn:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, _NOT_WIRED)
@@ -804,12 +883,29 @@ def create_app() -> FastAPI:
         _unavailable()
 
     @api.post("/engagements/{eid}/agents/{aid}/run")
-    async def run_agent(eid: str, aid: str) -> dict[str, Any]:
-        _unavailable()
+    async def run_agent(
+        eid: str, aid: str, _: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Dispatch a built-in archetype to its real specialist op as a background job.
+
+        Recon/web archetypes are Docker- and model-spawning (minutes-long), so this
+        runs off the request thread like sense/vuln-scan — poll ``/jobs`` (kind
+        ``agent-run``) or watch the SSE stream for completion.
+        """
+
+        _require_open(eid)
+        try:
+            job = adapter().start_job(eid, "agent-run", agent_id=aid)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "agent-run"}
 
     @api.get("/agent-runs/{rid}")
     async def agent_run(rid: str) -> dict[str, Any]:
-        _unavailable()
+        detail = adapter().agent_run(rid)
+        if detail is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "agent run not found")
+        return detail
 
     @api.post("/model/infer")
     async def model_infer(
