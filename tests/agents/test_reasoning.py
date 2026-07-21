@@ -127,7 +127,9 @@ def test_max_steps_cap() -> None:
         def observe(self, action, outcome, ctx) -> None:
             return None
 
-    loop = ReasoningLoop(_FreshScan(), _RecordingActor(), _NoopObserver(), max_steps=4)
+    # max_per_tool high so this exercises the max_steps cap, not the per-tool cap
+    loop = ReasoningLoop(_FreshScan(), _RecordingActor(), _NoopObserver(),
+                         max_steps=4, max_per_tool=99)
     result = loop.run(_wm(), objective="x")
     assert result.stop_reason == "max_steps"
     assert result.iterations == 4
@@ -152,6 +154,28 @@ def test_skips_already_run_action_and_stops_when_exhausted() -> None:
     result = loop.run(_wm(), objective="x")
     assert result.stop_reason == "exhausted"
     assert len(actor.calls) == 1  # ran the tool exactly once, no wasteful repeats
+
+
+def test_caps_runs_per_tool_to_force_diversification() -> None:
+    # A planner that keeps proposing the same tool with *different* params (evading
+    # exact-repeat dedup) must still not dominate: after max_per_tool runs it's
+    # skipped, so a loop offering only that tool stops instead of fixating.
+    class _VaryingScan:
+        def propose(self, ctx: LoopContext) -> ActionPlan:
+            return ActionPlan(actions=(
+                ProposedAction(tool="nuclei", target="h",
+                               params={"n": ctx.step}, rationale="vary"),
+            ))
+
+    class _NoopObserver:
+        def observe(self, action, outcome, ctx) -> None:
+            return None
+
+    actor = _RecordingActor()
+    loop = ReasoningLoop(_VaryingScan(), actor, _NoopObserver(), max_steps=10, max_per_tool=3)
+    result = loop.run(_wm(), objective="x")
+    assert len(actor.calls) == 3  # nuclei capped at 3 runs, then nothing fresh
+    assert result.stop_reason == "exhausted"
 
 
 def test_reflector_stuck_on_no_progress() -> None:
