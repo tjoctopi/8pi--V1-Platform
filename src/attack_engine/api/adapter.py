@@ -236,6 +236,9 @@ class EngineAdapter:
         self._retests: dict[str, dict[str, dict[str, Any]]] = {}
         #: saved Red Scope copilot presets (session-scoped).
         self._red_scope_agents: list[dict[str, Any]] = []
+        #: live campaign phase per engine engagement id (for the kill-chain progress
+        #: bar): the phase currently executing, or None when idle.
+        self._campaign_stage: dict[str, str | None] = {}
         bus = self._engine.event_bus
         if hasattr(bus, "subscribe"):
             bus.subscribe(self._route_event)
@@ -473,8 +476,21 @@ class EngineAdapter:
         campaign = AdversaryCampaign.from_engagement(
             eng, targets=tgts, max_rounds=max_rounds,
         )
+
+        # Live kill-chain progress: record the executing phase + stream a stage event
+        # so the console's progression bar shows exactly where we are right now.
+        def _progress(event: str, phase: str, round_no: int, **info: object) -> None:
+            self._campaign_stage[eid] = phase if event == "phase_start" else None
+            self._emit(eid, "campaign.stage",
+                       {"event": event, "phase": phase, "round": round_no, **info})
+
+        campaign.progress = _progress
+        self._campaign_stage[eid] = "recon"
         self._emit(eid, "campaign.started", {"targets": tgts, "goal": campaign.goal.describe()})
-        outcome = campaign.run()
+        try:
+            outcome = campaign.run()
+        finally:
+            self._campaign_stage[eid] = None
         # Promote graduated findings: the specialists graduate PROPOSED findings;
         # the deterministic oracles + correlator turn them into CONFIRMED (rule #1).
         with contextlib.suppress(AttackEngineError):
@@ -1141,6 +1157,100 @@ class EngineAdapter:
             self.assets(external_id), self.findings(external_id),
             chains=chains, ad_paths=ad_paths,
         )
+
+    #: The canonical kill-chain the progress bar walks (key, label, what it means).
+    _KILL_CHAIN: tuple[tuple[str, str, str], ...] = (
+        ("recon", "Recon", "Map the attack surface"),
+        ("confirm", "Confirm", "Prove exploitable findings (oracles)"),
+        ("foothold", "Foothold", "Land a session on a target"),
+        ("escalate", "Escalate", "Own credentials / privileges"),
+        ("lateral", "Lateral", "Reuse access across hosts"),
+        ("objective", "Objective", "Reach Domain Admin"),
+    )
+    #: Live campaign phase → the kill-chain stage it is actively working on.
+    _PHASE_TO_STAGE = {"recon": "recon", "web": "foothold", "identity": "escalate"}
+
+    def campaign_status(self, external_id: str) -> dict[str, Any]:
+        """Derive the live kill-chain progression from the REGISTERED world model.
+
+        The world model is the source of truth for the attack path, so each stage's
+        'done' is a real milestone in it (assets mapped, findings CONFIRMED, a foothold
+        chain realised, principals owned, a Domain-Admin path surfaced). The currently
+        executing campaign phase (if any) marks the active stage. Honest, empty-safe.
+        """
+
+        eid = engagement_id_for(external_id)
+        running_phase = self._campaign_stage.get(eid)
+        # A live signal for ANY running work, not just a campaign: a plain Sense /
+        # Vuln Scan / agent-run job also lights the bar so the operator always sees
+        # "what's happening right now".
+        running_job = next(
+            (j for j in self._jobs.get(eid, []) if j["status"] == "running"), None
+        )
+        job_kind = running_job["kind"] if running_job else None
+        active_phase = running_phase or job_kind
+        is_running = running_phase is not None or running_job is not None
+        base = {
+            "running": is_running,
+            "active_phase": active_phase,
+            "current": None,
+            "stages": [{"key": k, "label": lbl, "detail": d, "status": "pending"}
+                       for k, lbl, d in self._KILL_CHAIN],
+        }
+        if not self.is_open(external_id):
+            return base
+
+        eng = self.engagement(external_id)
+        wm = eng.world_model
+        findings = self.findings(external_id)
+        confirmed = [f for f in findings if f.get("exploitability") == "confirmed"]
+        reachable = len(wm.reachable_assets()) if wm else len(self.assets(external_id))
+        owned = list(wm.owned_principals) if wm else []
+        chains = wm.chains() if wm else []
+        da_paths = wm.domain_admin_paths() if wm else []
+        foothold = any(c.is_realised for c in chains) or any(
+            (str(f.get("technique_ref") or "") in ("T1059", "T1190"))
+            and f.get("exploitability") == "confirmed"
+            and any(w in (f.get("title") or "").lower()
+                    for w in ("command", "rce", "shell", "cmdi", "injection"))
+            for f in findings
+        )
+        done = {
+            "recon": reachable >= 1 or bool(self.assets(external_id)),
+            "confirm": len(confirmed) >= 1,
+            "foothold": foothold,
+            "escalate": len(owned) >= 1,
+            "lateral": len(owned) >= 1 and reachable > 1,
+            "objective": bool(da_paths) or bool(owned and da_paths),
+        }
+        counts = {
+            "recon": reachable, "confirm": len(confirmed),
+            "foothold": sum(1 for c in chains if c.is_realised),
+            "escalate": len(owned), "lateral": max(reachable - 1, 0) if owned else 0,
+            "objective": len(da_paths),
+        }
+        # Which stage is actively working: campaign phase → stage, else the running
+        # job kind → stage, else the first not-yet-done stage.
+        job_stage = {"sense": "recon", "vuln-scan": "confirm",
+                     "campaign": "recon", "agent-run": "confirm"}
+        active_stage = (
+            self._PHASE_TO_STAGE.get(running_phase or "")
+            or (job_stage.get(job_kind or "") if is_running else None)
+        )
+        first_pending = next((k for k, *_ in self._KILL_CHAIN if not done[k]), None)
+        current = active_stage or first_pending
+        stages = []
+        for k, lbl, d in self._KILL_CHAIN:
+            if done[k]:
+                status = "done"
+            elif k == current:
+                status = "active"
+            else:
+                status = "pending"
+            stages.append({"key": k, "label": lbl, "detail": d,
+                           "status": status, "count": counts.get(k, 0)})
+        return {"running": is_running, "active_phase": active_phase,
+                "current": current, "stages": stages}
 
     def world_model_view(self, external_id: str) -> dict[str, Any]:
         """Serialize the engagement's registered world model for the console.

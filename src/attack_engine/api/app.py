@@ -731,6 +731,11 @@ def create_app() -> FastAPI:
         _load(eid)
         return adapter().world_model_view(eid)
 
+    @api.get("/engagements/{eid}/campaign-status")
+    async def campaign_status(eid: str) -> dict[str, Any]:
+        _load(eid)
+        return adapter().campaign_status(eid)
+
     @api.get("/engagements/{eid}/attack-path/stream")
     async def attack_path_stream(
         eid: str, user: dict[str, Any] = Depends(get_current_user)

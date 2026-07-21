@@ -259,6 +259,25 @@ def test_run_agent_job_kind_dispatches(adapter: EngineAdapter) -> None:
     assert len(adapter.assets("ra-2")) == 1  # recon really ran off the request thread
 
 
+def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "cs-1")
+    st = adapter.campaign_status("cs-1")
+    keys = [s["key"] for s in st["stages"]]
+    assert keys == ["recon", "confirm", "foothold", "escalate", "lateral", "objective"]
+    assert st["running"] is False
+    # recon not done until an asset is discovered
+    assert next(s for s in st["stages"] if s["key"] == "recon")["status"] in ("active", "pending")
+    adapter.sense("cs-1", ["10.5.0.10"])  # real recon → an asset appears
+    st2 = adapter.campaign_status("cs-1")
+    assert next(s for s in st2["stages"] if s["key"] == "recon")["status"] == "done"
+
+
+def test_campaign_status_empty_when_closed(adapter: EngineAdapter) -> None:
+    st = adapter.campaign_status("never")
+    assert st["running"] is False
+    assert all(s["status"] == "pending" for s in st["stages"])
+
+
 def test_run_campaign_completes_and_records(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "camp-1")
     outcome = adapter.run_campaign("camp-1", ["10.5.0.10"], max_rounds=1)
