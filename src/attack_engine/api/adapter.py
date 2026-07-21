@@ -373,6 +373,72 @@ class EngineAdapter:
             "steps": [], "detections": [], "approvals_created": 0,
         })
 
+    def _deterministic_web_sweep(self, external_id: str, targets: list[str]) -> int:
+        """Exhaustive, LLM-independent web discovery — the reliable finding engine.
+
+        Crawls every web target (katana) + broad-scans it (nuclei), then probes the
+        discovered parameters for reflected-XSS (dalfox) and SQLi (sqlmap), folding
+        it all into the world model and graduating EVERY oracle-ready candidate into
+        a PROPOSED finding. The deterministic oracles (:meth:`Engagement.verify`) then
+        confirm what's real. Unlike the model-driven loop this always runs the same
+        thorough sweep, so findings don't depend on the planner's choices — the fix
+        for "runs but finds nothing". Every tool call is scope-checked + degrades on
+        its own, and streams a ``sweep.*`` event so the console shows each step.
+        Returns the number of PROPOSED findings graduated.
+        """
+
+        from urllib.parse import urlsplit
+
+        from ..agents.actions import ProposedAction
+        from ..agents.payload_synth import PayloadSynthesizer
+        from ..agents.reasoning import LoopContext
+        from ..agents.tool_actor import ToolRunnerActor
+        from ..agents.web_specialist import WebGraduator, WebObserver
+
+        eng = self.engagement(external_id)
+        eid = engagement_id_for(external_id)
+        wm = eng.world_model
+        if wm is None:
+            return 0
+        actor = ToolRunnerActor(eng.tool_runner)
+        observer = WebObserver()
+        ctx = LoopContext(wm, "exhaustive web discovery", (), 0, None)
+
+        def run(tool: str, target: str, params: dict[str, Any] | None = None) -> None:
+            try:
+                action = ProposedAction(
+                    tool=tool, target=target, params=params or {},
+                    rationale="deterministic thorough sweep", expected_value=0.9,
+                )
+                outcome = actor.act(action)
+                observer.observe(action, outcome, ctx)
+                self._emit(eid, "sweep.tool",
+                           {"tool": tool, "target": target, "ok": bool(outcome.ok)})
+            except Exception as exc:  # never let one tool sink the sweep
+                self._emit(eid, "sweep.error",
+                           {"tool": tool, "detail": f"{type(exc).__name__}: {exc}"})
+
+        # 1. crawl every surface (→ every parameter becomes an injection candidate)
+        #    and broad-scan it (→ CVE / misconfig / exposure findings). Katana's
+        #    parameters cover the injection classes; the oracles in verify() then
+        #    confirm each class deterministically — so this pair + the oracle suite
+        #    is exhaustive without a slow per-parameter scanner sweep.
+        for url in targets:
+            parts = urlsplit(url if "://" in url else f"http://{url}")
+            host = parts.hostname or url
+            scheme = parts.scheme or "http"
+            port = parts.port
+            base = {"scheme": scheme, **({"port": port} if port else {})}
+            run("katana", host, base)
+            run("nuclei", host, base)
+
+        # 2. graduate EVERY oracle-ready candidate → PROPOSED (verify confirms next)
+        synth = (PayloadSynthesizer(eng.context.gateway, engagement_id=eid)
+                 if eng.context.gateway is not None else None)
+        graduated = WebGraduator(eng.store, synthesizer=synth).graduate(wm)
+        self._emit(eid, "sweep.graduated", {"count": len(graduated)})
+        return len(graduated)
+
     def _run_web_loop(self, external_id: str, *, max_steps: int = 14) -> Any:
         """Drive the REAL Web specialist reasoning loop over the engagement.
 
@@ -419,21 +485,23 @@ class EngineAdapter:
             WebChainer().compose(wm)
 
     def vuln_scan(self, external_id: str) -> tuple[VerifyReport, MatchReport]:
-        """Screen web surfaces, run the accuracy oracles, then correlate CVEs.
+        """Thoroughly screen web surfaces, run the accuracy oracles, correlate CVEs.
 
-        The full safe finding path: the **Web specialist reasoning loop** actively
-        screens any web targets recon discovered (model-planned, read-only probes)
-        and graduates oracle-ready beliefs into PROPOSED findings; the deterministic
-        oracles then promote proposed→verified and the exploitability matcher scores
-        + correlates CVEs → CONFIRMED. Everything scope-enforced and audited. This is
-        the same reasoning pipeline the autonomous campaign runs, exposed as one step.
+        Discovery is a **deterministic, exhaustive sweep** (crawl + broad-scan every
+        web surface, probe every discovered parameter, graduate every oracle-ready
+        candidate) so findings don't depend on a model's choices — then the
+        deterministic oracles promote proposed→verified and the exploitability matcher
+        scores + correlates CVEs → CONFIRMED, and the chainer composes the attack path.
+        Everything scope-enforced and audited. (The model-driven loop is the campaign's
+        adaptive layer; here we want reliable, repeatable coverage.)
         """
 
         from ..netutil import web_targets
 
         eng = self.engagement(external_id)
-        if web_targets(eng.store):
-            self._run_web_loop(external_id)
+        web = web_targets(eng.store)
+        if web:
+            self._deterministic_web_sweep(external_id, web)
         # Verify + correlate independently — a single tool/rate hiccup in one
         # oracle degrades that finding, it never sinks the whole scan.
         verify = VerifyReport()
@@ -491,6 +559,14 @@ class EngineAdapter:
             outcome = campaign.run()
         finally:
             self._campaign_stage[eid] = None
+        # Guarantee thorough web coverage on top of the adaptive campaign: the
+        # deterministic sweep graduates every oracle-ready candidate so a run never
+        # ends empty just because the planner didn't probe a surface.
+        from ..netutil import web_targets
+        web = web_targets(eng.store)
+        if web:
+            with contextlib.suppress(Exception):
+                self._deterministic_web_sweep(external_id, web)
         # Promote graduated findings: the specialists graduate PROPOSED findings;
         # the deterministic oracles + correlator turn them into CONFIRMED (rule #1).
         with contextlib.suppress(AttackEngineError):

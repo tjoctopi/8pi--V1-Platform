@@ -259,6 +259,27 @@ def test_run_agent_job_kind_dispatches(adapter: EngineAdapter) -> None:
     assert len(adapter.assets("ra-2")) == 1  # recon really ran off the request thread
 
 
+def test_deterministic_web_sweep_graduates_from_crawl(
+    adapter: EngineAdapter, engine: Engine
+) -> None:
+    # Feed the fake sandbox a katana crawl with parameterised endpoints; the sweep
+    # must fold them into candidates and graduate the oracle-ready ones — reliably,
+    # with no model in the loop (the fix for "runs but finds nothing").
+    engine.sandbox.set_response(  # type: ignore[attr-defined]
+        "katana",
+        SandboxResult(
+            0,
+            b'{"endpoint":"http://10.5.0.10:80/app.php?id=1&file=x&q=z"}\n',
+            b"", 0.05, "fake",
+        ),
+    )
+    _open_signed(adapter, "sweep-1")
+    n = adapter._deterministic_web_sweep("sweep-1", ["http://10.5.0.10:80"])
+    assert n >= 1  # at least one oracle-ready candidate (sqli/lfi) graduated
+    findings = adapter.findings("sweep-1")
+    assert findings  # PROPOSED findings exist for verify() to confirm
+
+
 def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "cs-1")
     st = adapter.campaign_status("cs-1")
