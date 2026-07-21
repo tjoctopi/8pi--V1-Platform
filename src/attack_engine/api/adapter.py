@@ -43,6 +43,7 @@ from ..governance.rbac import AccessControl, Principal, Role
 from ..manager import EngagementManager
 from ..schemas.common import utcnow
 from ..schemas.events import Event
+from ..schemas.findings import FindingState
 from ..schemas.scope import RateLimit, RulesOfEngagement, Scope
 from ..verify.verifier import VerifyReport
 from . import views
@@ -239,6 +240,10 @@ class EngineAdapter:
         #: live campaign phase per engine engagement id (for the kill-chain progress
         #: bar): the phase currently executing, or None when idle.
         self._campaign_stage: dict[str, str | None] = {}
+        #: established C2 footholds per engine eid → session id → operating context
+        #: (backend + foothold runner + post-ex operator + proof), so the console can
+        #: list live sessions, run post-ex, and tear them down.
+        self._footholds: dict[str, dict[str, dict[str, Any]]] = {}
         bus = self._engine.event_bus
         if hasattr(bus, "subscribe"):
             bus.subscribe(self._route_event)
@@ -484,6 +489,151 @@ class EngineAdapter:
 
             WebChainer().compose(wm)
 
+    # ── offensive C2 / footholds (real live sessions) ──────────────────────
+    #: Confirmed finding types that are a command-execution foothold point.
+    _FOOTHOLD_TYPES = ("command-injection", "cmdi", "os-command", "rce")
+
+    def _is_foothold_capable(self, finding: Any) -> bool:
+        """A CONFIRMED command-execution finding with a usable injection point."""
+
+        ft = (getattr(finding, "type", "") or "").lower()
+        return (
+            finding.state == FindingState.CONFIRMED
+            and any(ft.startswith(p) for p in self._FOOTHOLD_TYPES)
+            and bool((finding.metadata or {}).get("param"))
+        )
+
+    def foothold_candidates(self, external_id: str) -> list[dict[str, Any]]:
+        """Confirmed command-execution findings a live foothold can be opened on."""
+
+        if not self.is_open(external_id):
+            return []
+        eng = self.engagement(external_id)
+        out: list[dict[str, Any]] = []
+        for f in eng.store.findings(FindingState.CONFIRMED):
+            if self._is_foothold_capable(f):
+                out.append({"finding_id": f.id, "title": f.title or f.type,
+                            "host": f.asset, "param": (f.metadata or {}).get("param"),
+                            "type": f.type})
+        return out
+
+    def establish_foothold(self, external_id: str, finding_id: str,
+                           *, actor: str = "operator") -> dict[str, Any]:
+        """Open + PROVE a live, governed C2 session over a confirmed web RCE.
+
+        Builds a web-shell C2 backend from the confirmed command-injection point and
+        drives the real :class:`FootholdRunner` (authorize → open scope-checked
+        session → prove whoami/id/hostname → track). Governed: the establish action
+        is gated (auto-approved under test auth, human-approved under a real scope),
+        audited, and kill-switchable. Runs on a worker (see the ``foothold`` job kind)
+        because the gate blocks the caller until a human resolves it.
+        """
+
+        from ..c2.webshell import web_shell_backend
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        finding = eng.store.get_finding(finding_id)
+        if finding is None:
+            raise AttackEngineError(f"finding {finding_id!r} not found")
+        if not self._is_foothold_capable(finding):
+            raise AttackEngineError(
+                "finding is not a confirmed command-execution point — a live foothold "
+                "needs a CONFIRMED command-injection/RCE finding with an injection param"
+            )
+        backend = web_shell_backend(eng.tool_runner, finding)
+        runner = eng.foothold(backend)
+        self._emit(eid, "c2.establishing", {"finding": finding_id, "host": finding.asset})
+        foothold = runner.establish(
+            finding.asset, opened_by=actor, technique="T1190",
+            metadata={"finding": finding_id},
+        )
+        if foothold is None:
+            raise AttackEngineError("foothold denied by the approval gate")
+        if not foothold.ok:
+            raise AttackEngineError("session opened but liveness/proof failed")
+        sess = foothold.session
+        self._footholds.setdefault(eid, {})[sess.id] = {
+            "backend": backend, "runner": runner, "postex": eng.post_ex(backend),
+            "proof": dict(foothold.proof), "technique": "T1190",
+            "host": finding.asset, "finding_id": finding_id,
+            "opened_at": utcnow().isoformat(),
+        }
+        self._emit(eid, "c2.foothold", {"session": sess.id, "host": finding.asset,
+                                        "whoami": foothold.proof.get("whoami", "?")})
+        self._runs.setdefault(eid, []).append({
+            "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+            "agent_name": "Foothold", "role": "offensive", "status": "completed",
+            "detection_rate": None, "started_at": utcnow().isoformat(),
+            "ended_at": utcnow().isoformat(),
+            "summary": (f"live session on {finding.asset} — "
+                        f"whoami={foothold.proof.get('whoami', '?')} "
+                        f"host={foothold.proof.get('hostname', '?')}"),
+            "steps": [], "detections": [], "approvals_created": 0,
+        })
+        return self._session_json(eid, sess.id)
+
+    def _session_json(self, eid: str, session_id: str) -> dict[str, Any]:
+        eng = self._manager.get(eid, self._service)
+        sess = eng.session_manager.get(session_id)
+        ctx = self._footholds.get(eid, {}).get(session_id, {})
+        return {
+            "id": session_id,
+            "host": ctx.get("host") or (sess.host if sess else "?"),
+            "status": (sess.status.value if sess else "closed"),
+            "technique": ctx.get("technique", "T1190"),
+            "proof": ctx.get("proof", {}),
+            "finding_id": ctx.get("finding_id"),
+            "opened_at": ctx.get("opened_at"),
+            "kind": (sess.kind.value if sess else "shell"),
+        }
+
+    def sessions(self, external_id: str) -> dict[str, Any]:
+        """Live C2 sessions + the confirmed findings a new foothold can open on."""
+
+        if not self.is_open(external_id):
+            return {"sessions": [], "candidates": []}
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        live = {s.id for s in eng.session_manager.sessions(active_only=True)}
+        sessions = [self._session_json(eid, sid)
+                    for sid in self._footholds.get(eid, {})]
+        # de-emphasise torn-down sessions but keep them for the record
+        for s in sessions:
+            if s["id"] not in live and s["status"] != "closed":
+                s["status"] = "closed"
+        return {"sessions": sessions, "candidates": self.foothold_candidates(external_id)}
+
+    def session_command(self, external_id: str, session_id: str, command: str,
+                        *, actor: str = "operator") -> dict[str, Any]:
+        """Run one bounded, governed post-exploitation command over a live session."""
+
+        eid = engagement_id_for(external_id)
+        ctx = self._footholds.get(eid, {}).get(session_id)
+        if ctx is None:
+            raise AttackEngineError(f"no live session {session_id!r}")
+        eng = self.engagement(external_id)
+        sess = eng.session_manager.get(session_id)
+        if sess is None:
+            raise AttackEngineError("session is no longer live")
+        result = ctx["postex"].run(sess, command)
+        if result is None:
+            raise AttackEngineError("post-ex command denied by the approval gate")
+        return {"session_id": session_id, "command": result.command,
+                "output": result.output, "ok": result.ok, "host": result.host}
+
+    def teardown_session(self, external_id: str, session_id: str,
+                         *, actor: str = "operator") -> dict[str, Any]:
+        """Close a live session — bookkeeping AND transport (kill-switchable)."""
+
+        eid = engagement_id_for(external_id)
+        ctx = self._footholds.get(eid, {}).get(session_id)
+        if ctx is None:
+            raise AttackEngineError(f"no live session {session_id!r}")
+        closed = ctx["runner"].teardown()
+        self._emit(eid, "c2.teardown", {"session": session_id, "closed": closed})
+        return {"session_id": session_id, "closed": closed, "status": "closed"}
+
     def vuln_scan(self, external_id: str) -> tuple[VerifyReport, MatchReport]:
         """Thoroughly screen web surfaces, run the accuracy oracles, correlate CVEs.
 
@@ -666,7 +816,7 @@ class EngineAdapter:
 
     def start_job(
         self, external_id: str, kind: str, targets: list[str] | None = None,
-        *, agent_id: str | None = None,
+        *, agent_id: str | None = None, ref: str | None = None,
     ) -> dict[str, Any]:
         """Start a long op ('sense'/'vuln-scan'/'campaign'/'agent-run') on a worker.
 
@@ -685,7 +835,7 @@ class EngineAdapter:
             job = {
                 "id": f"job-{len(self._jobs.get(eid, [])) + 1}", "kind": kind,
                 "status": "running", "started_at": time.time(),
-                "ended_at": None, "detail": "", "agent_id": agent_id,
+                "ended_at": None, "detail": "", "agent_id": agent_id, "ref": ref,
             }
             self._jobs.setdefault(eid, []).append(job)
         self._emit(eid, "job.started", {"job": job["id"], "kind": kind})
@@ -711,6 +861,8 @@ class EngineAdapter:
                 self.run_campaign(external_id, targets)
             elif kind == "agent-run":
                 self.run_agent(external_id, job.get("agent_id") or "")
+            elif kind == "foothold":
+                self.establish_foothold(external_id, job.get("ref") or "")
             else:
                 raise AttackEngineError(f"unknown job kind {kind!r}")
             job["status"] = "done"

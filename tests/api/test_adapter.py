@@ -280,6 +280,46 @@ def test_deterministic_web_sweep_graduates_from_crawl(
     assert findings  # PROPOSED findings exist for verify() to confirm
 
 
+def test_foothold_candidates_and_establish_guards(adapter: EngineAdapter) -> None:
+    from attack_engine.schemas.findings import Finding, FindingState
+
+    _open_signed(adapter, "c2-1")
+    eng = adapter.engagement("c2-1")
+    # a CONFIRMED command-injection finding with a usable injection point
+    f = Finding(
+        engagement_id=eng.scope.engagement_id, asset="10.5.0.10",
+        type="command-injection", title="cmdi at /dns?target_host",
+        metadata={"param": "target_host", "path": "/dns", "scheme": "http",
+                  "port": 80, "method": "POST"},
+    )
+    eng.store.propose_finding(f)
+    eng.store.promote_finding(f.id, FindingState.VERIFIED, verified_by="test")
+    eng.store.promote_finding(f.id, FindingState.CONFIRMED, verified_by="test")
+
+    cands = adapter.foothold_candidates("c2-1")
+    assert any(c["finding_id"] == f.id and c["param"] == "target_host" for c in cands)
+
+    # a PROPOSED (unconfirmed) finding is NOT a foothold candidate and refuses establish
+    g = Finding(engagement_id=eng.scope.engagement_id, asset="10.5.0.10",
+                type="sqli-boolean-blind", title="maybe", metadata={"param": "id"})
+    eng.store.propose_finding(g)
+    assert all(c["finding_id"] != g.id for c in adapter.foothold_candidates("c2-1"))
+    with pytest.raises(AttackEngineError):
+        adapter.establish_foothold("c2-1", g.id)
+    with pytest.raises(AttackEngineError):
+        adapter.establish_foothold("c2-1", "no-such-finding")
+
+    # post-ex / teardown on a non-existent session refuse cleanly (never crash)
+    with pytest.raises(AttackEngineError):
+        adapter.session_command("c2-1", "no-session", "id")
+    with pytest.raises(AttackEngineError):
+        adapter.teardown_session("c2-1", "no-session")
+    # sessions view is a valid, empty-safe shape
+    view = adapter.sessions("c2-1")
+    assert view["sessions"] == [] and any(
+        c["finding_id"] == f.id for c in view["candidates"])
+
+
 def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "cs-1")
     st = adapter.campaign_status("cs-1")
