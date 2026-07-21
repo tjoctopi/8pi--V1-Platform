@@ -121,12 +121,16 @@ class ReasoningLoop:
         reflector: Reflector | None = None,
         *,
         max_steps: int = 20,
+        max_per_tool: int = 3,
     ) -> None:
         self._planner = planner
         self._actor = actor
         self._observer = observer
         self._reflector = reflector or HeuristicReflector()
         self._max_steps = max_steps
+        #: Cap on successful runs of any single tool, so the loop diversifies across
+        #: the tool set rather than fixating on one scanner.
+        self._max_per_tool = max_per_tool
 
     def run(
         self,
@@ -149,6 +153,10 @@ class ReasoningLoop:
         # and instead progresses through the remaining tools. A call with different
         # params/target (a genuinely new probe) has a different signature and is allowed.
         done: set[tuple[str, str, str]] = set()
+        # How many times each tool has run successfully — a cap stops the planner
+        # fixating on one broad scanner (e.g. re-running nuclei with tweaked params
+        # for many steps) and forces it to move through the rest of the tool set.
+        tool_runs: dict[str, int] = {}
         for step in range(self._max_steps):
             if stop_when is not None and stop_when(world_model):
                 result.stop_reason = "objective_satisfied"
@@ -167,7 +175,7 @@ class ReasoningLoop:
             # crashing the whole loop/campaign (same posture as the Actor's guard).
             try:
                 plan = self._planner.propose(ctx)
-                action = self._select(plan, done)
+                action = self._select(plan, done, tool_runs, self._max_per_tool)
             except BudgetExceededError:
                 result.stop_reason = "budget_exhausted"
                 break
@@ -187,6 +195,7 @@ class ReasoningLoop:
             outcome = self._actor.act(action)
             if outcome.ok:
                 done.add(self._sig(action))
+                tool_runs[action.tool] = tool_runs.get(action.tool, 0) + 1
             self._observer.observe(action, outcome, ctx)
             decision = self._reflector.reflect(action, outcome, ctx)
             result.steps.append(
@@ -228,23 +237,33 @@ class ReasoningLoop:
 
     @classmethod
     def _select(
-        cls, plan: ActionPlan, done: set[tuple[str, str, str]] | None = None
+        cls,
+        plan: ActionPlan,
+        done: set[tuple[str, str, str]] | None = None,
+        tool_runs: dict[str, int] | None = None,
+        max_per_tool: int = 3,
     ) -> ProposedAction | None:
         """Highest expected-value action, skipping ones already run this loop.
 
-        Skipping exact repeats (same tool + target + params) forces the loop to
-        progress through the remaining tools instead of re-running the top-ranked
-        one every step. An explicit FINISH always wins so the planner can stop. When
-        every proposed action has already run, returns ``None`` (nothing new to do).
+        Two filters force the loop to progress instead of spinning: exact repeats
+        (same tool + target + params) are skipped, and a tool that has already run
+        ``max_per_tool`` times is skipped so the planner can't fixate on one scanner
+        (e.g. re-running nuclei with tweaked params). An explicit FINISH always wins.
+        Returns ``None`` when nothing new/allowed remains (loop stops "exhausted").
         """
 
         if not plan.actions:
             return None
         done = done or set()
+        tool_runs = tool_runs or {}
         finish = [a for a in plan.actions if a.tool == FINISH_TOOL]
         if finish:
             return max(finish, key=lambda a: a.expected_value)
-        fresh = [a for a in plan.actions if cls._sig(a) not in done]
+        fresh = [
+            a for a in plan.actions
+            if cls._sig(a) not in done
+            and tool_runs.get(a.tool, 0) < max_per_tool
+        ]
         if not fresh:
             return None
         return max(fresh, key=lambda a: a.expected_value)

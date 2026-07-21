@@ -22,6 +22,8 @@ confirm (rule #1).
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -190,7 +192,17 @@ class AdversaryCampaign:
     #: classified against the signed RoE for the outcome's authorization summary).
     profile: AdversaryProfile | None = None
     actor: str = "campaign"
+    #: Optional live-progress hook: called ``progress(event, phase, round, **info)``
+    #: as the campaign enters/finishes each phase, so a caller (the API) can stream
+    #: "which stage are we at right now" to the console. Never affects control flow.
+    progress: Callable[..., None] | None = None
     _runs: list[PhaseRun] = field(default_factory=list, init=False)
+
+    def _notify(self, event: str, phase: str, round_no: int, **info: object) -> None:
+        if self.progress is None:
+            return
+        with contextlib.suppress(Exception):
+            self.progress(event, phase, round_no, **info)
 
     def run(self) -> CampaignOutcome:
         """Pursue the goal round by round until met / halted / converged."""
@@ -246,9 +258,12 @@ class AdversaryCampaign:
                 return  # goal met mid-round — no need to run later specialists
             if self._killed() or self._budget_exhausted():
                 return
+            self._notify("phase_start", phase.name, round_no)
             result = ObjectiveController(phase.loop).pursue(
                 self.world_model, phase.objective, budget=self.budget
             )
+            self._notify("phase_complete", phase.name, round_no,
+                         met=result.objective_met, stop_reason=result.stop_reason)
             self._runs.append(PhaseRun(
                 round=round_no, name=phase.name, objective=phase.objective.describe(),
                 met=result.objective_met, stop_reason=result.stop_reason,

@@ -59,6 +59,7 @@ export const api = {
   // full autonomous kill chain (recon → web → identity → objective) as a job
   campaign: (id) => http.post(`/engagements/${id}/campaign`).then((r) => r.data),
   worldModel: (id) => http.get(`/engagements/${id}/world-model`).then((r) => r.data),
+  campaignStatus: (id) => http.get(`/engagements/${id}/campaign-status`).then((r) => r.data),
   jobs: (id) => http.get(`/engagements/${id}/jobs`).then((r) => r.data.jobs),
   engagementEventsUrl: (id) => withToken(`${API}/engagements/${id}/events`),
   assets: (id) => http.get(`/engagements/${id}/assets`).then((r) => r.data.assets),
