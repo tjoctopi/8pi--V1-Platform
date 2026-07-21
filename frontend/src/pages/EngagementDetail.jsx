@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STATUS } from "../lib/theme";
 import { Btn, Badge, Dot, Tabs, Loading, Modal, useToast, errMsg, TextInput } from "../components/ui";
+import KillChainProgress from "../components/KillChainProgress";
 
 import OverviewTab from "./tabs/OverviewTab";
 import RoeTab from "./tabs/RoeTab";
@@ -119,7 +120,11 @@ export default function EngagementDetail() {
             </div>
           </div>
         </div>
-        <div className="px-6 mt-4">
+        {/* persistent kill-chain progression — visible from every tab */}
+        <div className="px-6 mt-3">
+          <KillChainProgress eid={id} compact />
+        </div>
+        <div className="px-6 mt-3">
           <Tabs tabs={TABS} active={tab} onChange={setTab} />
         </div>
       </div>

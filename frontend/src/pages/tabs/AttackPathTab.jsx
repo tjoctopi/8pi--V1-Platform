@@ -6,7 +6,6 @@ import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, Sta
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary } from "../../components/ui";
-import KillChainProgress from "../../components/KillChainProgress";
 
 const ROLE = {
   entry: { color: "#FFFFFF", label: "Entry Point", icon: Target },
@@ -553,9 +552,7 @@ export default function AttackPathTab({ eid }) {
   const activeLayerKey = selPath && activeStep >= 0 ? selPath.steps[activeStep].layer : null;
 
   return (
-    <div className="space-y-6">
-      <Panel className="p-4"><KillChainProgress eid={eid} /></Panel>
-      <div className="grid lg:grid-cols-5 gap-6">
+    <div className="grid lg:grid-cols-5 gap-6">
       <div className="lg:col-span-3 space-y-4">
         <SectionTitle sub="Client ecosystem projected onto the globe — each continent is an attack surface layer (Code, Dev, Cloud, SaaS, Endpoints, On-Prem, Edge/IoT/AI). Click a path or press Play to walk the breach across layers."
           right={selPath && <Btn variant="ghost" onClick={resetView} data-testid="reset-view-btn">Reset View</Btn>}>
@@ -643,7 +640,6 @@ export default function AttackPathTab({ eid }) {
 
         <SectionTitle sub="The engine's registered belief state — hypotheses, chains, owned principals — shared by every reasoning loop and the campaign.">World Model</SectionTitle>
         <WorldModelPanel wm={wm} />
-      </div>
       </div>
     </div>
   );
