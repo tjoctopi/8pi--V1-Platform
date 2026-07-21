@@ -110,6 +110,10 @@ class ChatBody(BaseModel):
     context: dict[str, Any] | None = None
 
 
+class CommandBody(BaseModel):
+    command: str
+
+
 # ── app factory ───────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
@@ -735,6 +739,55 @@ def create_app() -> FastAPI:
     async def campaign_status(eid: str) -> dict[str, Any]:
         _load(eid)
         return adapter().campaign_status(eid)
+
+    # ── offensive C2 / live footholds ────────────────────────────────────────
+    @api.get("/engagements/{eid}/sessions")
+    async def sessions(eid: str) -> dict[str, Any]:
+        _load(eid)
+        if not adapter().is_open(eid):
+            return {"sessions": [], "candidates": []}
+        return adapter().sessions(eid)
+
+    @api.post("/engagements/{eid}/findings/{fid}/establish-foothold")
+    async def establish_foothold(
+        eid: str, fid: str, _: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Open a live, governed C2 session over a confirmed web RCE — as a job.
+
+        Runs off the request thread because establishing a foothold is a high-impact
+        gated action: under a real scope it parks for human approval (poll ``/jobs``
+        kind ``foothold`` + watch ``/sessions``); under test-auth it completes fast.
+        """
+
+        _require_open(eid)
+        try:
+            job = adapter().start_job(eid, "foothold", ref=fid)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "foothold"}
+
+    @api.post("/engagements/{eid}/sessions/{sid}/command")
+    async def session_command(
+        eid: str, sid: str, body: CommandBody,
+        user: dict[str, Any] = Depends(require_role("operator")),
+    ) -> dict[str, Any]:
+        _require_open(eid)
+        if not body.command.strip():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "command required")
+        try:
+            return adapter().session_command(eid, sid, body.command, actor=user["email"])
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    @api.post("/engagements/{eid}/sessions/{sid}/teardown")
+    async def teardown_session(
+        eid: str, sid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        _require_open(eid)
+        try:
+            return adapter().teardown_session(eid, sid, actor=user["email"])
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     @api.get("/engagements/{eid}/attack-path/stream")
     async def attack_path_stream(

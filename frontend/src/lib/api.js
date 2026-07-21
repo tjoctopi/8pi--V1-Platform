@@ -60,6 +60,12 @@ export const api = {
   campaign: (id) => http.post(`/engagements/${id}/campaign`).then((r) => r.data),
   worldModel: (id) => http.get(`/engagements/${id}/world-model`).then((r) => r.data),
   campaignStatus: (id) => http.get(`/engagements/${id}/campaign-status`).then((r) => r.data),
+
+  // offensive C2 / live footholds
+  sessions: (id) => http.get(`/engagements/${id}/sessions`).then((r) => r.data),
+  establishFoothold: (id, fid) => http.post(`/engagements/${id}/findings/${fid}/establish-foothold`).then((r) => r.data),
+  sessionCommand: (id, sid, command) => http.post(`/engagements/${id}/sessions/${sid}/command`, { command }).then((r) => r.data),
+  teardownSession: (id, sid) => http.post(`/engagements/${id}/sessions/${sid}/teardown`).then((r) => r.data),
   jobs: (id) => http.get(`/engagements/${id}/jobs`).then((r) => r.data.jobs),
   engagementEventsUrl: (id) => withToken(`${API}/engagements/${id}/events`),
   assets: (id) => http.get(`/engagements/${id}/assets`).then((r) => r.data.assets),

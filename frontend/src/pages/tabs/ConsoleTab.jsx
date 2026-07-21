@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   MagnifyingGlass, ShieldWarning, Robot, CaretDown, CaretRight, Check, X as XIcon,
-  Gavel, Warning, Lightning,
+  Gavel, Warning, Lightning, Crosshair, Terminal, Skull,
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
@@ -17,6 +17,63 @@ function StepRow({ s }) {
       {s.technique && <span className="mono text-[10px] text-muted hidden sm:inline">{s.technique.id}</span>}
       <span className="text-sub text-right">{s.result}</span>
     </div>
+  );
+}
+
+function SessionCard({ s, canWrite, onCommand, onTeardown, busy }) {
+  const [cmd, setCmd] = useState("");
+  const [out, setOut] = useState(null);
+  const [running, setRunning] = useState(false);
+  const closed = s.status === "closed";
+  const run = async () => {
+    if (!cmd.trim() || running) return;
+    setRunning(true);
+    try { const r = await onCommand(s.id, cmd); setOut(r); } finally { setRunning(false); }
+  };
+  return (
+    <Panel className="p-4" data-testid={`session-${s.id}`}
+      style={closed ? { opacity: 0.55 } : { borderColor: "#FF00A0" }}>
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <Skull size={16} className="text-incident" weight="fill" />
+        <span className="mono text-sm text-white">{s.host}</span>
+        <Badge color={closed ? "#7A7A7A" : "#FF2A2A"} dot>{closed ? "closed" : "LIVE SESSION"}</Badge>
+        <span className="mono text-[10px] text-muted">{s.technique}</span>
+        <span className="ml-auto mono text-[10px] text-muted">{s.id}</span>
+        {!closed && (
+          <Btn variant="danger" icon={XIcon} disabled={!canWrite || busy}
+            onClick={() => onTeardown(s.id)} data-testid={`teardown-${s.id}`}>Teardown</Btn>
+        )}
+      </div>
+      {/* proof of impact */}
+      {s.proof && Object.keys(s.proof).length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+          {Object.entries(s.proof).map(([k, v]) => (
+            <div key={k} className="bg-black border border-line px-2 py-1.5">
+              <div className="label text-[9px]">{k}</div>
+              <div className="mono text-[11px] text-volt truncate">{v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* post-ex command runner */}
+      {!closed && (
+        <div className="flex items-center gap-2">
+          <Terminal size={14} className="text-muted shrink-0" />
+          <input value={cmd} onChange={(e) => setCmd(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") run(); }}
+            disabled={!canWrite}
+            placeholder="post-ex command (e.g. id, uname -a) — scope-bound & audited"
+            data-testid={`cmd-${s.id}`}
+            className="flex-1 bg-black border border-line text-white text-xs mono px-2 py-1.5 focus:outline-none focus:border-volt placeholder:text-muted" />
+          <Btn variant="dark" loading={running} disabled={!canWrite || !cmd.trim()} onClick={run} data-testid={`run-cmd-${s.id}`}>Run</Btn>
+        </div>
+      )}
+      {out && (
+        <pre className="mt-2 bg-black border-l-2 border-volt p-2 text-[11px] mono text-sub overflow-x-auto whitespace-pre-wrap" data-testid={`cmd-out-${s.id}`}>
+          {out.command}{"\n"}{out.output || "(no output)"}
+        </pre>
+      )}
+    </Panel>
   );
 }
 
@@ -61,6 +118,11 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState("");
   const [live, setLive] = useState([]);
+  const [c2, setC2] = useState({ sessions: [], candidates: [] });
+
+  const loadC2 = useCallback(() => {
+    api.sessions(eid).then(setC2).catch(() => {});
+  }, [eid]);
 
   const load = useCallback(async () => {
     const [ag, r, ap, iv] = await Promise.all([api.agents(), api.agentRuns(eid), api.approvals(eid), api.invocations(eid)]);
@@ -68,6 +130,7 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
     setRuns(r);
     setApprovals(ap);
     setInvs(iv);
+    loadC2();
     if (!pick) {
       const off = ag.find((a) => a.role !== "defensive" && a.promotion_state === "authorized");
       setPick(off?.id || (ag[0] && ag[0].id) || "");
@@ -110,6 +173,17 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
     } catch (e) { toast.error(errMsg(e)); }
     finally { if (es) es.close(); setBusy(""); }
   };
+
+  // C2: establish runs as a governed background job (gate may park for approval)
+  const establish = (fid) =>
+    actJob("est" + fid, "foothold", () => api.establishFoothold(eid, fid),
+      "Foothold established — live session opened").then(loadC2);
+  const sessionCmd = async (sid, command) => {
+    try { const r = await api.sessionCommand(eid, sid, command); return r; }
+    catch (e) { toast.error(errMsg(e)); return { command, output: `error: ${errMsg(e)}` }; }
+  };
+  const teardown = (sid) =>
+    act("td" + sid, () => api.teardownSession(eid, sid), "Session torn down").then(loadC2);
 
   const pending = approvals.filter((a) => a.status === "pending");
   const authorized = agents.filter((a) => a.promotion_state === "authorized");
@@ -168,6 +242,41 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
           </div>
         )}
       </Panel>
+
+      {/* offensive C2 — footholds & live sessions */}
+      <div>
+        <SectionTitle sub="Confirmed command-execution findings can be turned into a live, governed C2 session (scope-checked, human-gated, audited, kill-switchable). Run bounded post-ex over the session and tear it down.">
+          Footholds & C2
+        </SectionTitle>
+        {(c2.candidates?.length > 0) && (
+          <div className="space-y-2 mb-3">
+            {c2.candidates.map((f) => (
+              <Panel key={f.finding_id} className="p-3 flex items-center gap-3 flex-wrap" data-testid={`foothold-candidate-${f.finding_id}`}>
+                <Crosshair size={16} className="text-volt" weight="fill" />
+                <span className="text-sm text-white truncate">{f.title}</span>
+                <Badge color="#FF2A2A">confirmed RCE</Badge>
+                <span className="mono text-[11px] text-muted truncate">{f.host} · {f.param}</span>
+                <Btn className="ml-auto" icon={Crosshair} loading={busy === "est" + f.finding_id}
+                  disabled={engagement.halted || !canWrite || !!busy}
+                  onClick={() => establish(f.finding_id)} data-testid={`establish-${f.finding_id}`}>
+                  Establish Foothold
+                </Btn>
+              </Panel>
+            ))}
+          </div>
+        )}
+        {c2.sessions?.length > 0 ? (
+          <div className="space-y-3">
+            {c2.sessions.map((s) => (
+              <SessionCard key={s.id} s={s} canWrite={canWrite} busy={busy}
+                onCommand={sessionCmd} onTeardown={teardown} />
+            ))}
+          </div>
+        ) : (c2.candidates?.length === 0 && (
+          <Empty icon={Skull} title="No live footholds"
+            hint="Run Full Attack / Vuln Scan to confirm a command-execution finding, then Establish Foothold to open a live session." />
+        ))}
+      </div>
 
       {/* approvals */}
       <div>
