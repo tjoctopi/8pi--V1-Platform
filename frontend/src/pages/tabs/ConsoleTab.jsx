@@ -6,7 +6,6 @@ import {
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Select, useToast, errMsg } from "../../components/ui";
-import KillChainProgress from "../../components/KillChainProgress";
 import { useAuth, roleAtLeast } from "../../lib/auth";
 
 function StepRow({ s }) {
@@ -131,7 +130,6 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
       {/* pipeline */}
       <Panel className="p-5">
         <SectionTitle sub="Drive the engagement — one autonomous kill chain, or step by step. Every action is scope-checked, gated, and audited.">Live Console</SectionTitle>
-        <KillChainProgress eid={eid} className="mb-4" />
         <div className="flex flex-wrap items-center gap-3">
           <Btn icon={Lightning} variant="primary" loading={busy === "campaign"} disabled={engagement.halted || !canWrite || !!busy}
             onClick={() => actJob("campaign", "campaign", () => api.campaign(eid), "Full attack complete — findings & attack path updated")}

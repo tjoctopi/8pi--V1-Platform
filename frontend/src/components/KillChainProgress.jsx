@@ -7,7 +7,7 @@ const COLOR = { done: "#FF00A0", active: "#FFB020", pending: "#4A4A4A" };
 // Live kill-chain progression bar. Self-contained: polls campaign-status so it
 // advances on every step (recon → confirm → foothold → escalate → lateral →
 // objective) whichever tab it sits in, backed by the engine's world model.
-export default function KillChainProgress({ eid, className = "" }) {
+export default function KillChainProgress({ eid, className = "", compact = false }) {
   const [status, setStatus] = useState(null);
   const timer = useRef(null);
 
@@ -27,6 +27,33 @@ export default function KillChainProgress({ eid, className = "" }) {
   const stages = status.stages || [];
   const doneCount = stages.filter((s) => s.status === "done").length;
   const pct = stages.length ? Math.round((doneCount / stages.length) * 100) : 0;
+
+  // Compact one-line variant for the persistent engagement header.
+  if (compact) {
+    return (
+      <div className={`flex items-center gap-3 ${className}`} data-testid="kill-chain-progress">
+        <span className="label shrink-0">Kill Chain</span>
+        <div className="flex items-stretch gap-1 flex-1 min-w-0">
+          {stages.map((s) => {
+            const c = COLOR[s.status] || COLOR.pending;
+            const isCurrent = status.current === s.key;
+            return (
+              <div key={s.key} className="flex-1 min-w-0 flex items-center gap-1.5" title={`${s.label} — ${s.detail}`} data-testid={`stage-${s.key}`}>
+                <span className="h-1.5 flex-1 rounded-full transition-colors" style={{ background: c, boxShadow: isCurrent ? `0 0 8px ${c}` : "none" }} />
+                <span className="mono text-[9px] uppercase tracking-tight hidden md:inline shrink-0"
+                  style={{ color: s.status === "pending" ? "#7A7A7A" : "#fff", fontWeight: isCurrent ? 800 : 500 }}>
+                  {s.label}{s.status === "active" && " ●"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <span className="mono text-[10px] shrink-0" style={{ color: status.running ? "#FFB020" : "#7A7A7A" }}>
+          {status.running ? `▶ ${status.active_phase}` : `${pct}%`}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className={className} data-testid="kill-chain-progress">
