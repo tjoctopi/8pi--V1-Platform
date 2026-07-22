@@ -378,6 +378,31 @@ class EngineAdapter:
             "steps": [], "detections": [], "approvals_created": 0,
         })
 
+    def _web_targets_or_recon(self, external_id: str) -> list[str]:
+        """Web surfaces to sweep — self-sufficient.
+
+        Returns the web services recon already classified; if there are none yet
+        (the deployed operator ran Vuln Scan / Run Full Attack without a prior Sense,
+        or recon under-classified the port), it runs recon on the authorized scope
+        targets first so a web surface is discovered. This is why the pipeline finds
+        + confirms vulns in the deployed console, not just after a manual Sense.
+        """
+
+        from ..netutil import web_targets
+
+        eng = self.engagement(external_id)
+        web = web_targets(eng.store)
+        if web:
+            return web
+        targets = self._scope_targets(external_id)
+        if not targets:
+            return []
+        eid = engagement_id_for(external_id)
+        self._emit(eid, "sweep.recon", {"reason": "no web service yet", "targets": targets})
+        with contextlib.suppress(Exception):
+            self.sense(external_id, targets)
+        return web_targets(eng.store)
+
     def _deterministic_web_sweep(self, external_id: str, targets: list[str]) -> int:
         """Exhaustive, LLM-independent web discovery — the reliable finding engine.
 
@@ -646,10 +671,8 @@ class EngineAdapter:
         adaptive layer; here we want reliable, repeatable coverage.)
         """
 
-        from ..netutil import web_targets
-
         eng = self.engagement(external_id)
-        web = web_targets(eng.store)
+        web = self._web_targets_or_recon(external_id)
         if web:
             self._deterministic_web_sweep(external_id, web)
         # Verify + correlate independently — a single tool/rate hiccup in one
@@ -711,11 +734,10 @@ class EngineAdapter:
             self._campaign_stage[eid] = None
         # Guarantee thorough web coverage on top of the adaptive campaign: the
         # deterministic sweep graduates every oracle-ready candidate so a run never
-        # ends empty just because the planner didn't probe a surface.
-        from ..netutil import web_targets
-        web = web_targets(eng.store)
-        if web:
-            with contextlib.suppress(Exception):
+        # ends empty just because the planner didn't probe (or classify) a surface.
+        with contextlib.suppress(Exception):
+            web = self._web_targets_or_recon(external_id)
+            if web:
                 self._deterministic_web_sweep(external_id, web)
         # Promote graduated findings: the specialists graduate PROPOSED findings;
         # the deterministic oracles + correlator turn them into CONFIRMED (rule #1).
@@ -1418,10 +1440,16 @@ class EngineAdapter:
         job_kind = running_job["kind"] if running_job else None
         active_phase = running_phase or job_kind
         is_running = running_phase is not None or running_job is not None
+        # Epoch start + elapsed of the running op, so the console shows a live
+        # "running for N s" timer and the operator knows a long scan is progressing.
+        started_at = running_job["started_at"] if running_job else None
+        elapsed = (time.time() - started_at) if started_at else 0.0
         base = {
             "running": is_running,
             "active_phase": active_phase,
             "current": None,
+            "started_at": started_at,
+            "elapsed_sec": round(elapsed, 1),
             "stages": [{"key": k, "label": lbl, "detail": d, "status": "pending"}
                        for k, lbl, d in self._KILL_CHAIN],
         }
@@ -1478,7 +1506,8 @@ class EngineAdapter:
             stages.append({"key": k, "label": lbl, "detail": d,
                            "status": status, "count": counts.get(k, 0)})
         return {"running": is_running, "active_phase": active_phase,
-                "current": current, "stages": stages}
+                "current": current, "started_at": started_at,
+                "elapsed_sec": round(elapsed, 1), "stages": stages}
 
     def world_model_view(self, external_id: str) -> dict[str, Any]:
         """Serialize the engagement's registered world model for the console.

@@ -20,6 +20,8 @@ function StepRow({ s }) {
   );
 }
 
+const fmtRun = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`);
+
 function SessionCard({ s, canWrite, onCommand, onTeardown, busy }) {
   const [cmd, setCmd] = useState("");
   const [out, setOut] = useState(null);
@@ -119,6 +121,16 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
   const [busy, setBusy] = useState("");
   const [live, setLive] = useState([]);
   const [c2, setC2] = useState({ sessions: [], candidates: [] });
+  const [runElapsed, setRunElapsed] = useState(0);
+
+  // live elapsed timer while an operation runs, so a minutes-long scan visibly
+  // progresses (the operator knows it isn't stuck).
+  useEffect(() => {
+    if (!busy) { setRunElapsed(0); return undefined; }
+    const start = Date.now();
+    const t = setInterval(() => setRunElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [busy]);
 
   const loadC2 = useCallback(() => {
     api.sessions(eid).then(setC2).catch(() => {});
@@ -227,7 +239,9 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
             <div className="flex items-center gap-2 px-3 py-2 border-b border-line">
               <span className="w-2 h-2 rounded-full bg-info blink" />
               <span className="label text-info">Live progress</span>
-              <span className="ml-auto mono text-[10px] text-muted">{busy ? "running…" : "done"}</span>
+              <span className="ml-auto mono text-[10px]" style={{ color: busy ? "#FFB020" : "#7A7A7A" }}>
+                {busy ? `running… ${fmtRun(runElapsed)}` : "done"}
+              </span>
             </div>
             <div className="max-h-52 overflow-y-auto p-3 space-y-1 font-mono text-[11px]">
               {live.length === 0 ? (
