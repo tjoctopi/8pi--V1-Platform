@@ -10,6 +10,7 @@ from the already-translated console asset/finding dicts (see
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any
 
@@ -158,6 +159,39 @@ def _geo_for(index: int, total: int) -> tuple[float, float]:
     return lat, lng
 
 
+#: The operator/attacker origin the breach arcs emanate from (config later).
+ATTACKER_ORIGIN = (40.7128, -74.006)  # NYC — a neutral ops vantage
+
+
+def _is_private_ip(addr: str) -> bool:
+    parts = addr.split(".")
+    if len(parts) != 4 or not all(p.isdigit() for p in parts):
+        return False  # hostname / non-IPv4 → treated as external
+    a, b = int(parts[0]), int(parts[1])
+    return (a == 10 or a == 127 or (a == 192 and b == 168)
+            or (a == 172 and 16 <= b <= 31) or (a == 169 and b == 254))
+
+
+def _locate(addr: str) -> tuple[float, float, str]:
+    """Offline, deterministic geolocation for a target address → (lat, lng, region).
+
+    Honest by design: **internal** RFC1918/loopback hosts have no public geo, so
+    they cluster near the ops origin (an internal network, plotted together);
+    **external** hosts get a stable hash-derived position. No fabricated city names.
+    A real GeoLite2/geoip2 backend can replace this for true public-IP geo later.
+    """
+
+    private = _is_private_ip(addr)
+    h = int(hashlib.sha256(addr.encode()).hexdigest()[:12], 16)
+    if private:
+        lat = ATTACKER_ORIGIN[0] + ((h % 1000) / 1000 - 0.5) * 6
+        lng = ATTACKER_ORIGIN[1] + ((h // 1000 % 1000) / 1000 - 0.5) * 10
+        return round(lat, 4), round(lng, 4), "internal"
+    lat = (h % 11000) / 100 - 52          # ~[-52, 58]
+    lng = (h // 11000 % 34000) / 100 - 170  # ~[-170, 170]
+    return round(lat, 4), round(lng, 4), "external"
+
+
 # Chain-rung / AD-edge class → ATT&CK technique shown on each hop of a real route.
 _KIND_TECH: dict[str, tuple[str, str, str]] = {
     "open-redirect": ("T1190", "Open Redirect", "initial-access"),
@@ -284,13 +318,12 @@ def build_attack_path(
     by_asset = _findings_by_asset(findings)
     points: list[dict[str, Any]] = []
     geo: dict[str, tuple[float, float]] = {}
-    total = len(assets)
 
     entry = pivot = crown = 0
-    for i, a in enumerate(assets):
+    for a in assets:
         addr = _asset_addr(a)
         fs = by_asset.get(addr, [])
-        lat, lng = _geo_for(i, total)
+        lat, lng, region = _locate(addr)  # real-ish geo: where the target lives
         geo[addr] = (lat, lng)
         foothold = any(
             f.get("exploitability") == "confirmed" or f.get("severity") in ("crit", "high")
@@ -314,6 +347,7 @@ def build_attack_path(
             "size": 0.4 + min(len(fs), 5) * 0.12,
             "layer": layer, "layer_label": _LAYERS[layer]["label"],
             "exposure": a.get("exposure", "unknown"), "risk": r,
+            "geo": {"lat": lat, "lng": lng, "region": region, "ip": addr},
         })
 
     # ensure at least one crown for a target when we have findings but none marked
@@ -380,9 +414,19 @@ def build_attack_path(
             "top": max((p["risk"] for p in members), default=0),
         })
 
+    # ambient "incoming breach" arcs from the ops/attacker origin to every target —
+    # the cinematic geo layer (real coordinates, not the layer-transition arcs above).
+    a_lat, a_lng = ATTACKER_ORIGIN
+    geo_arcs = [
+        {"startLat": a_lat, "startLng": a_lng, "endLat": p["lat"], "endLng": p["lng"],
+         "target": p["id"], "role": p["role"]}
+        for p in points
+    ]
     return {
         "points": points, "arcs": arcs, "paths": paths, "continents": [],
         "layer_stats": layer_stats,
+        "attacker_origin": {"lat": a_lat, "lng": a_lng, "label": "OPS ORIGIN"},
+        "geo_arcs": geo_arcs,
         "entry_points": [p["id"] for p in points if p["role"] == "entry"],
         "crown_jewels": crown_ids,
         "stats": {"entry": entry, "pivot": max(pivot, 0), "crown": crown,

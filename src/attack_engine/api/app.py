@@ -81,6 +81,7 @@ class RoeUpdate(BaseModel):
     scope_allowlist: list[str] = []
     scope_denylist: list[str] = []
     allowed_tools: list[str] = []
+    forbidden_tools: list[str] = []
     allowed_techniques: list[str] = []
     window_start: str | None = None
     window_end: str | None = None
@@ -315,7 +316,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status.HTTP_409_CONFLICT, "signed RoE is immutable")
         doc["roe"].update({
             "scope_allowlist": body.scope_allowlist, "scope_denylist": body.scope_denylist,
-            "allowed_tools": body.allowed_tools, "allowed_techniques": body.allowed_techniques,
+            "allowed_tools": body.allowed_tools, "forbidden_tools": body.forbidden_tools,
+            "allowed_techniques": body.allowed_techniques,
             "max_intensity": body.max_intensity, "window_start": body.window_start,
             "window_end": body.window_end, "version": doc["roe"].get("version", 1) + 1,
         })
@@ -739,6 +741,30 @@ def create_app() -> FastAPI:
     async def campaign_status(eid: str) -> dict[str, Any]:
         _load(eid)
         return adapter().campaign_status(eid)
+
+    @api.get("/engagements/{eid}/authorization")
+    async def authorization(eid: str) -> dict[str, Any]:
+        """Rules-of-engagement control room: techniques/tools/actions →
+        autonomous / gated / denied, from the signed RoE. Operators change status by
+        editing the RoE (PUT /roe) — the toggles the console shows."""
+
+        doc = _load(eid)
+        return adapter().authorization_view(eid, doc.get("roe"))
+
+    @api.post("/engagements/{eid}/chains/{chain_id}/execute")
+    async def execute_chain(
+        eid: str, chain_id: str, _: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Run the attack along a composed chain (confirm rungs → open a session if a
+        foothold rung confirms) — as a governed background job (poll ``/jobs`` kind
+        ``chain-exec``, watch ``/sessions`` + ``/attack-path``)."""
+
+        _require_open(eid)
+        try:
+            job = adapter().start_job(eid, "chain-exec", ref=chain_id)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "chain-exec"}
 
     # ── offensive C2 / live footholds ────────────────────────────────────────
     @api.get("/engagements/{eid}/sessions")

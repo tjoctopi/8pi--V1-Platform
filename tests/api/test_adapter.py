@@ -280,6 +280,28 @@ def test_deterministic_web_sweep_graduates_from_crawl(
     assert findings  # PROPOSED findings exist for verify() to confirm
 
 
+def test_authorization_view_classifies_techniques_tools_actions(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "authz-1")
+    view = adapter.authorization_view("authz-1")
+    assert {"live", "tier", "read_only", "signed", "techniques", "tools", "actions",
+            "counts"} <= view.keys()
+    assert view["techniques"] and view["tools"]
+    # every technique carries a real status from the engine's policy
+    assert all(t["status"] in ("autonomous", "gated", "gated-evasion")
+               for t in view["techniques"])
+    # defense-evasion TTPs are always gated-evasion, never autonomous
+    evasion = [t for t in view["techniques"] if t["evasion"]]
+    assert all(t["status"] == "gated-evasion" for t in evasion) if evasion else True
+    # high-impact actions are shown always-gated
+    assert all(a["status"] == "gated" for a in view["actions"])
+
+
+def test_execute_chain_unknown_raises(adapter: EngineAdapter) -> None:
+    _open_signed(adapter, "chain-x")
+    with pytest.raises(AttackEngineError):
+        adapter.execute_chain("chain-x", "chain-does-not-exist")
+
+
 def test_vuln_scan_auto_recons_when_no_web_surface(adapter: EngineAdapter) -> None:
     # Deployed regression: running Vuln Scan without a prior Sense must still work —
     # the sweep auto-runs recon on the authorized targets so there's a surface to

@@ -61,6 +61,11 @@ export const api = {
   worldModel: (id) => http.get(`/engagements/${id}/world-model`).then((r) => r.data),
   campaignStatus: (id) => http.get(`/engagements/${id}/campaign-status`).then((r) => r.data),
 
+  // authorization control room (RoE-driven)
+  authorization: (id) => http.get(`/engagements/${id}/authorization`).then((r) => r.data),
+  // execute a composed attack chain (starts the attack along it)
+  executeChain: (id, chainId) => http.post(`/engagements/${id}/chains/${chainId}/execute`).then((r) => r.data),
+
   // offensive C2 / live footholds
   sessions: (id) => http.get(`/engagements/${id}/sessions`).then((r) => r.data),
   establishFoothold: (id, fid) => http.post(`/engagements/${id}/findings/${fid}/establish-foothold`).then((r) => r.data),
