@@ -27,6 +27,7 @@ from ..schemas.tools import ToolRunRecord
 from .dedup import DedupIndex
 from .graph import AttackGraph
 from .graph_backend import GraphBackend
+from .store_backends import KnowledgeBackend, KnowledgeSnapshot
 
 _log = get_logger("knowledge.store")
 
@@ -67,6 +68,7 @@ class KnowledgeStore:
         event_bus: EventPublisher | None = None,
         *,
         graph: GraphBackend | None = None,
+        backend: KnowledgeBackend | None = None,
     ) -> None:
         self.engagement_id = engagement_id
         self._bus = event_bus
@@ -78,6 +80,33 @@ class KnowledgeStore:
         self._remediations: dict[str, Remediation] = {}
         self._tool_runs: list[ToolRunRecord] = []
         self._lock = threading.RLock()
+        #: Durable backend (None ⇒ in-memory only). Persists every result mutation
+        #: and rehydrates prior results on construction so a re-opened engagement
+        #: restores its assets/findings after an API restart.
+        self._backend = backend
+        if backend is not None:
+            self._rehydrate(backend.load(engagement_id))
+
+    def _rehydrate(self, snap: KnowledgeSnapshot) -> None:
+        """Restore persisted results into memory + rebuild the graph/dedup index.
+
+        No events are emitted — rehydration is silent state restoration, not new
+        discovery. The attack graph is rebuilt from the persisted assets (assets that
+        were discovered were reachable), and the dedup index from the findings.
+        """
+
+        for a in snap.assets:
+            self._assets_by_address[a.address] = a
+            self._assets_by_id[a.id] = a
+            self._graph.add_asset(a, reachable_from_entry=True)
+            for svc in a.services:
+                self._graph.add_service(a.id, svc)
+        for f in snap.findings:
+            self._findings[f.id] = f
+            self._dedup.add(f)
+        for r in snap.remediations:
+            self._remediations[r.id] = r
+        self._tool_runs.extend(snap.tool_runs)
 
     @property
     def graph(self) -> GraphBackend:
@@ -149,6 +178,8 @@ class KnowledgeStore:
                         "version": svc.version,
                     },
                 )
+            if self._backend is not None:
+                self._backend.save_asset(self.engagement_id, canonical)
             return canonical
 
     def assets(self) -> list[Asset]:
@@ -181,6 +212,8 @@ class KnowledgeStore:
                 merged_evidence = tuple(dict.fromkeys((*rep.evidence, *finding.evidence)))
                 rep = rep.model_copy(update={"evidence": merged_evidence})
                 self._findings[rep_id] = rep
+                if self._backend is not None:
+                    self._backend.save_finding(self.engagement_id, rep)
                 _log.debug("finding deduped", finding_id=finding.id, rep=rep_id)
                 return rep
 
@@ -188,6 +221,8 @@ class KnowledgeStore:
             reachable = self._reachability_for(finding.asset)
             stored = finding.model_copy(update={"reachable": reachable})
             self._findings[stored.id] = stored
+            if self._backend is not None:
+                self._backend.save_finding(self.engagement_id, stored)
             self._emit(
                 EventType.FINDING_PROPOSED,
                 emitted_by=emitted_by,
@@ -221,6 +256,8 @@ class KnowledgeStore:
                 priority=priority,
             )
             self._findings[finding_id] = promoted
+            if self._backend is not None:
+                self._backend.save_finding(self.engagement_id, promoted)
             event_map = {
                 FindingState.VERIFIED: EventType.FINDING_VERIFIED,
                 FindingState.CONFIRMED: EventType.FINDING_CONFIRMED,
@@ -264,6 +301,8 @@ class KnowledgeStore:
             raise ValueError("remediation engagement mismatch")
         with self._lock:
             self._remediations[remediation.id] = remediation
+            if self._backend is not None:
+                self._backend.save_remediation(self.engagement_id, remediation)
         self._emit(
             EventType.REMEDIATION_PROPOSED,
             emitted_by=emitted_by,
@@ -275,6 +314,8 @@ class KnowledgeStore:
     def update_remediation(self, remediation: Remediation) -> Remediation:
         with self._lock:
             self._remediations[remediation.id] = remediation
+            if self._backend is not None:
+                self._backend.save_remediation(self.engagement_id, remediation)
         return remediation
 
     def remediations(self, finding_id: str | None = None) -> list[Remediation]:
@@ -297,9 +338,10 @@ class KnowledgeStore:
         """
 
         with self._lock:
-            self._tool_runs.append(
-                ToolRunRecord(tool=tool, target=target, outcome=outcome, detail=detail)
-            )
+            record = ToolRunRecord(tool=tool, target=target, outcome=outcome, detail=detail)
+            self._tool_runs.append(record)
+            if self._backend is not None:
+                self._backend.save_tool_run(self.engagement_id, record)
 
     def tool_runs(self) -> list[ToolRunRecord]:
         with self._lock:

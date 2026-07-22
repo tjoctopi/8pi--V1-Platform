@@ -109,5 +109,10 @@ class ShellStore:
         cur = self._conn.execute("SELECT doc FROM engagements ORDER BY created_at DESC")
         return [json.loads(r["doc"]) for r in cur.fetchall()]
 
+    def delete_engagement(self, eid: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM engagements WHERE id=?", (eid,))
+            self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()

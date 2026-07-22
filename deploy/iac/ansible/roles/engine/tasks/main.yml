@@ -13,6 +13,9 @@
     AE_AUDIT_BACKEND={{ ae_audit_backend }}
     AE_AUDIT_POSTGRES_DSN=postgresql://{{ ae_pg_user }}:$PGPW@8pi-postgres:5432/{{ ae_pg_db }}
     AE_AUDIT_SQLITE_PATH={{ ae_audit_sqlite_path }}
+    AE_STORE_BACKEND={{ ae_store_backend }}
+    AE_STORE_SQLITE_PATH={{ ae_store_sqlite_path }}
+    AE_STORE_POSTGRES_DSN=postgresql://{{ ae_pg_user }}:$PGPW@8pi-postgres:5432/{{ ae_pg_db }}
     AE_EVENTBUS_BACKEND=redis
     AE_EVENTBUS_REDIS_URL=redis://8pi-redis:6379/0
     AE_GRAPH_BACKEND=neo4j

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Info, Certificate, HardDrives, Graph, Terminal, Bug, ShieldWarning, ListDashes, FileText,
-  ArrowLeft, Warning, Play, Target, ShieldCheck,
+  ArrowLeft, Warning, Play, Target, ShieldCheck, Broom, Trash,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -30,6 +30,7 @@ export default function EngagementDetail() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("overview");
   const [killOpen, setKillOpen] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -71,6 +72,25 @@ export default function EngagementDetail() {
     }
   };
 
+  const doPurge = async () => {
+    setBusy(true);
+    try {
+      await api.purgeEngagement(id);
+      toast.success("Results cleared — assets/findings reset (RoE + audit kept)");
+      await load();
+    } catch (err) { toast.error(errMsg(err)); } finally { setBusy(false); }
+  };
+
+  const doDelete = async () => {
+    if (confirm !== "DELETE") return toast.error('Type "DELETE" to confirm');
+    setBusy(true);
+    try {
+      await api.deleteEngagement(id);
+      toast.success("Engagement deleted");
+      nav("/");
+    } catch (err) { toast.error(errMsg(err)); setBusy(false); }
+  };
+
   const TABS = [
     { id: "overview", label: "Overview", icon: Info },
     { id: "roe", label: "RoE", icon: Certificate },
@@ -108,6 +128,8 @@ export default function EngagementDetail() {
               <div className="text-xs text-muted mono mt-1.5">ENG {e.id.slice(0, 12)} · estate {e.estate?.id || "—"}</div>
             </div>
             <div className="flex items-center gap-2">
+              <Btn variant="ghost" icon={Broom} onClick={doPurge} disabled={busy} data-testid="clear-results-btn">Clear Results</Btn>
+              <Btn variant="ghost" icon={Trash} onClick={() => setDelOpen(true)} disabled={busy} data-testid="delete-engagement-btn">Delete</Btn>
               {e.halted ? (
                 <Btn variant="success" icon={Play} onClick={doResume} data-testid="resume-btn">Resume</Btn>
               ) : (
@@ -157,6 +179,21 @@ export default function EngagementDetail() {
         <div className="flex justify-end gap-2 mt-5">
           <Btn variant="ghost" onClick={() => setKillOpen(false)}>Cancel</Btn>
           <Btn variant="danger" onClick={doHalt} loading={busy} icon={Warning} data-testid="kill-confirm-btn">Halt Engagement</Btn>
+        </div>
+      </Modal>
+
+      <Modal open={delOpen} onClose={() => setDelOpen(false)} title="Delete Engagement">
+        <p className="text-sm text-sub mb-2">
+          This permanently deletes <b className="text-white">{e.name}</b> and all its persisted
+          results (assets, findings, tool-runs, agent-runs). The <b className="text-white">immutable
+          audit chain is preserved</b> — a <span className="mono">engagement.deleted</span> entry
+          records this action. This cannot be undone.
+        </p>
+        <p className="text-xs text-muted mb-4 mono">Type <span className="text-kill">DELETE</span> to confirm.</p>
+        <TextInput data-testid="delete-confirm-input" value={confirm} onChange={(ev) => setConfirm(ev.target.value)} placeholder="DELETE" />
+        <div className="flex justify-end gap-2 mt-5">
+          <Btn variant="ghost" onClick={() => { setDelOpen(false); setConfirm(""); }}>Cancel</Btn>
+          <Btn variant="danger" onClick={doDelete} loading={busy} icon={Trash} data-testid="delete-confirm-btn">Delete Engagement</Btn>
         </div>
       </Modal>
     </div>

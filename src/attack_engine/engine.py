@@ -49,6 +49,7 @@ from .governance.audit_backends import build_audit_backend
 from .governance.authorization import KillSwitch
 from .governance.gates import HumanGate, Responder, approve_all, deny_all
 from .knowledge.store import KnowledgeStore
+from .knowledge.store_backends import KnowledgeBackend, build_knowledge_backend
 from .logging import configure_logging, get_logger
 from .schemas.agentspec import AgentSpec
 from .schemas.findings import FindingState
@@ -307,6 +308,7 @@ class Engine:
         feed: CveFeed | None = None,
         scorer: ExploitabilityScorer | None = None,
         gate_responder: Responder | None = None,
+        knowledge_backend: KnowledgeBackend | None = None,
     ) -> None:
         self.settings = settings
         self.audit = audit
@@ -314,6 +316,9 @@ class Engine:
         self.gateway = gateway
         self.sandbox = sandbox
         self.registry = registry
+        #: Durable results backend (None ⇒ in-memory). One instance, keyed per
+        #: engagement id, shared across engagements — like the audit backend.
+        self.knowledge_backend = knowledge_backend
         self.feed = feed or build_cve_feed(settings)
         self.calibrator = build_calibrator(settings)
         self.scorer = scorer or ExploitabilityScorer(calibrator=self.calibrator)
@@ -329,11 +334,13 @@ class Engine:
         gateway = ModelGateway(settings=s, audit=audit)
         sandbox = build_sandbox(s)
         registry = default_registry()
+        knowledge_backend = build_knowledge_backend(s)
         _log.info(
             "engine initialised",
             audit=s.audit_backend.value,
             eventbus=s.eventbus_backend.value,
             sandbox=sandbox.name,
+            store=s.store_backend.value,
             model_provider=gateway.provider_name,
         )
         return cls(
@@ -343,6 +350,7 @@ class Engine:
             gateway=gateway,
             sandbox=sandbox,
             registry=registry,
+            knowledge_backend=knowledge_backend,
         )
 
     def blue_sentry(self, scope: Scope) -> BlueSentry:
@@ -406,7 +414,8 @@ class Engine:
             )
 
         store = KnowledgeStore(
-            scope.engagement_id, event_bus=self.event_bus, graph=self._build_graph(scope)
+            scope.engagement_id, event_bus=self.event_bus,
+            graph=self._build_graph(scope), backend=self.knowledge_backend,
         )
         network = self.settings.sandbox_network or f"ae-{scope.engagement_id}"
         runner = ToolRunner(
