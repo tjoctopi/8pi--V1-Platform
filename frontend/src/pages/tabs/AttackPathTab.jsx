@@ -5,7 +5,8 @@ import * as THREE from "three";
 import { Target, ShieldWarning, LockKey, Lightning, Play, Pause, ArrowRight, StackSimple, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary, useToast, errMsg } from "../../components/ui";
+import WORLD from "../../assets/world-countries.json";
 
 const ROLE = {
   entry: { color: "#FFFFFF", label: "Entry Point", icon: Target },
@@ -118,9 +119,13 @@ function EcosystemGlobe({ data, selPath, activeStep, hoverLayer }) {
 
   const continents = data.continents || [];
   const crownRings = (data.points || []).filter((p) => p.role === "crown").map((p) => ({ lat: p.lat, lng: p.lng, big: false }));
+  const origin = data.attacker_origin;
 
   const arcs = useMemo(() => {
-    if (!selPath) return data.arcs || [];
+    // No path selected → show the ambient geo "incoming breach" arcs from the ops
+    // origin to every located target (the cinematic earth layer). A selected path
+    // shows its kill-chain segments instead.
+    if (!selPath) return data.geo_arcs || data.arcs || [];
     const segs = selPath.steps.slice(0, -1).map((s, i) => ({
       startLat: selPath.steps[i].geo[0], startLng: selPath.steps[i].geo[1],
       endLat: selPath.steps[i + 1].geo[0], endLng: selPath.steps[i + 1].geo[1],
@@ -133,13 +138,15 @@ function EcosystemGlobe({ data, selPath, activeStep, hoverLayer }) {
   const activeNode = selPath && activeStep >= 0 ? selPath.steps[activeStep] : null;
   const rings = useMemo(() => {
     const r = [...crownRings];
+    if (origin) r.push({ lat: origin.lat, lng: origin.lng, big: true, ops: true });
     if (activeNode) r.push({ lat: activeNode.geo[0], lng: activeNode.geo[1], big: true });
     return r;
-  }, [activeNode]); // eslint-disable-line
+  }, [activeNode, origin]); // eslint-disable-line
 
+  // country labels come from geo now; the ops origin gets a marker label.
   const continentLabels = useMemo(() =>
-    continents.map((c) => ({ lat: c.center.lat, lng: c.center.lng, label: c.label, sub: c.sub, color: c.color, key: c.key })),
-  [continents]);
+    origin ? [{ lat: origin.lat, lng: origin.lng, label: origin.label, sub: "", color: "#FFFFFF", key: "ops" }] : [],
+  [origin]);
 
   // ─── centralised rotate control: pauses on hover, hover-layer, path selection, or user pause ───
   const shouldRotate = !paused && !selPath && !hoverPoint && !hoverLayer;
@@ -250,7 +257,14 @@ function EcosystemGlobe({ data, selPath, activeStep, hoverLayer }) {
           showAtmosphere
           atmosphereColor="#FF00A0"
           atmosphereAltitude={0.18}
-          /* ecosystem continents */
+          /* real earth landmasses — hex-polygon "movie" globe (Natural Earth) */
+          hexPolygonsData={WORLD.features}
+          hexPolygonResolution={3}
+          hexPolygonMargin={0.28}
+          hexPolygonAltitude={0.006}
+          hexPolygonColor={() => "rgba(122,122,122,0.32)"}
+          hexPolygonsTransitionDuration={0}
+          /* ecosystem continents (overlay, usually empty) */
           polygonsData={continents}
           polygonGeoJsonGeometry={(d) => d.geometry}
           polygonCapColor={(d) => hexA(d.color, 0.32 * dim(d))}
@@ -287,13 +301,14 @@ function EcosystemGlobe({ data, selPath, activeStep, hoverLayer }) {
           arcStartLng="startLng"
           arcEndLat="endLat"
           arcEndLng="endLng"
-          arcColor={() => (selPath ? ["#FF00A0", "#FF2A2A"] : ["#7A7A7A", "#7A7A7A"])}
-          arcStroke={selPath ? 1.3 : 0.5}
-          arcDashLength={0.4}
-          arcDashGap={0.18}
+          arcColor={(a) => (selPath ? ["#FF00A0", "#FF2A2A"]
+            : a.role === "entry" ? ["#FF00A0", "#FF2A2A"] : ["#00E5FF", "#FF00A0"])}
+          arcStroke={selPath ? 1.3 : 0.55}
+          arcDashLength={0.35}
+          arcDashGap={0.12}
           arcDashInitialGap={() => Math.random()}
-          arcDashAnimateTime={selPath ? 1200 : 1800}
-          arcAltitudeAutoScale={0.6}
+          arcDashAnimateTime={selPath ? 1200 : 2200}
+          arcAltitudeAutoScale={0.5}
           /* rings on crown jewels + active hop */
           ringsData={rings}
           ringColor={(d) => (d.big ? "#FFFFFF" : "#FF2A2A")}
@@ -360,8 +375,9 @@ function LayerBadge({ layer, label, color }) {
   );
 }
 
-function PathCard({ p, idx, selected, activeStep, onSelect, onPlay, onStep }) {
+function PathCard({ p, idx, selected, activeStep, onSelect, onPlay, onStep, onExecute, executing }) {
   const layers = p.layers_traversed || p.steps.map((s) => s.layer);
+  const runnable = p.kind === "chain" || p.kind === "identity";
   return (
     <Panel
       className={`p-4 transition-colors cursor-pointer ${selected ? "border-volt" : "hover:border-white/25"}`}
@@ -381,6 +397,13 @@ function PathCard({ p, idx, selected, activeStep, onSelect, onPlay, onStep }) {
         <Btn variant={selected ? "primary" : "dark"} icon={Play} onClick={(e) => { e.stopPropagation(); onPlay(p); }} data-testid={`play-path-${p.id}`}>
           Play Breach
         </Btn>
+        {runnable && onExecute && (
+          <Btn variant="danger" icon={Lightning} loading={executing === p.id}
+            disabled={!!executing}
+            onClick={(e) => { e.stopPropagation(); onExecute(p); }} data-testid={`execute-${p.id}`}>
+            {p.is_realised ? "Re-run Attack" : "Execute Attack"}
+          </Btn>
+        )}
       </div>
       {p.objective && <div className="text-xs text-sub mb-3 mono">▶ {p.objective}</div>}
       <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
@@ -500,12 +523,36 @@ function WorldModelPanel({ wm }) {
 }
 
 export default function AttackPathTab({ eid }) {
+  const toast = useToast();
   const [data, setData] = useState(null);
   const [wm, setWm] = useState(null);
   const [selPath, setSelPath] = useState(null);
   const [activeStep, setActiveStep] = useState(-1);
   const [playing, setPlaying] = useState(false);
   const [hoverLayer, setHoverLayer] = useState(null);
+  const [executing, setExecuting] = useState(null);
+
+  // Execute a composed chain: start the attack along it (governed background job),
+  // poll to completion, then refresh the path + world model so rungs light up / a
+  // session appears.
+  const executeChain = async (p) => {
+    setExecuting(p.id);
+    try {
+      await api.executeChain(eid, p.id);
+      for (let i = 0; i < 200; i++) {
+        const jobs = await api.jobs(eid);
+        const j = jobs.find((x) => x.kind === "chain-exec");
+        if (j && j.status !== "running") {
+          if (j.status === "error") throw new Error(j.detail || "chain execution failed");
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      toast.success("Attack executed along the chain");
+      api.attackPath(eid).then(setData);
+      api.worldModel(eid).then(setWm).catch(() => {});
+    } catch (e) { toast.error(errMsg(e)); } finally { setExecuting(null); }
+  };
 
   // AI stream
   const [streaming, setStreaming] = useState(false);
@@ -595,7 +642,7 @@ export default function AttackPathTab({ eid }) {
             <div className="space-y-3">
               {data.paths.map((p, i) => (
                 <PathCard key={p.id} p={p} idx={i} selected={selPath?.id === p.id} activeStep={selPath?.id === p.id ? activeStep : -1}
-                  onSelect={selectPath} onPlay={playPath} onStep={stepTo} />
+                  onSelect={selectPath} onPlay={playPath} onStep={stepTo} onExecute={executeChain} executing={executing} />
               ))}
             </div>
           )}

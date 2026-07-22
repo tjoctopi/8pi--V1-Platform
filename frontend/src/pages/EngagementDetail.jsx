@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Info, Certificate, HardDrives, Graph, Terminal, Bug, ShieldWarning, ListDashes, FileText,
-  ArrowLeft, Warning, Play, Target,
+  ArrowLeft, Warning, Play, Target, ShieldCheck,
 } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -12,6 +12,7 @@ import KillChainProgress from "../components/KillChainProgress";
 
 import OverviewTab from "./tabs/OverviewTab";
 import RoeTab from "./tabs/RoeTab";
+import AuthorizationTab from "./tabs/AuthorizationTab";
 import AssetsTab from "./tabs/AssetsTab";
 import ThreatMapTab from "./tabs/ThreatMapTab";
 import AttackPathTab from "./tabs/AttackPathTab";
@@ -73,6 +74,7 @@ export default function EngagementDetail() {
   const TABS = [
     { id: "overview", label: "Overview", icon: Info },
     { id: "roe", label: "RoE", icon: Certificate },
+    { id: "authorization", label: "Authorization", icon: ShieldCheck },
     { id: "assets", label: "Assets", icon: HardDrives, badge: counts.assets },
     { id: "map", label: "Threat Map", icon: Graph },
     { id: "attackpath", label: "Attack Path", icon: Target },
@@ -133,6 +135,7 @@ export default function EngagementDetail() {
       <div className="p-6 max-w-[1500px] mx-auto">
         {tab === "overview" && <OverviewTab eid={id} engagement={e} roe={roe} counts={counts} reload={load} goTab={setTab} />}
         {tab === "roe" && <RoeTab eid={id} engagement={e} roe={roe} reload={load} />}
+        {tab === "authorization" && <AuthorizationTab eid={id} />}
         {tab === "assets" && <AssetsTab eid={id} />}
         {tab === "map" && <ThreatMapTab eid={id} />}
         {tab === "attackpath" && <AttackPathTab eid={id} />}

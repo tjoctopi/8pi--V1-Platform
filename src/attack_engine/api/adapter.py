@@ -659,6 +659,78 @@ class EngineAdapter:
         self._emit(eid, "c2.teardown", {"session": session_id, "closed": closed})
         return {"session_id": session_id, "closed": closed, "status": "closed"}
 
+    def execute_chain(self, external_id: str, chain_id: str,
+                      *, actor: str = "operator") -> dict[str, Any]:
+        """Run the attack along a composed chain — the "click a chain → attack starts".
+
+        Drives the real engine along the chain: (1) discover+confirm on the chain's
+        host so its rungs light up (deterministic sweep → oracles → chainer refresh),
+        then (2) if a foothold-capable rung (confirmed command-execution) exists, open
+        a live governed C2 session on that host. Governed + audited; runs as a job.
+        Returns the chain's realisation state + any session opened.
+        """
+
+        from urllib.parse import urlsplit
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        wm = eng.world_model
+        chain = None
+        if wm is not None:
+            chain = next((c for c in wm.chains()
+                          if c.id == chain_id or f"chain-{c.id}" == chain_id), None)
+        if chain is None:
+            raise AttackEngineError(f"attack chain {chain_id!r} not found")
+        subject = chain.entry_subject
+        host = (urlsplit(subject).hostname if "://" in subject
+                else subject.split("/")[0].split(":")[0]) or subject
+        self._emit(eid, "chain.execute",
+                   {"chain": chain.id, "objective": chain.objective, "host": host})
+
+        # 1. discover + confirm on the chain's host so rungs light up
+        web = self._web_targets_or_recon(external_id)
+        if web:
+            focused = [w for w in web if host in w] or web
+            with contextlib.suppress(Exception):
+                self._deterministic_web_sweep(external_id, focused)
+        with contextlib.suppress(AttackEngineError):
+            eng.verify()
+        with contextlib.suppress(AttackEngineError):
+            eng.correlate()
+        self._compose_chains(eng)
+
+        # 2. if a foothold-capable finding on the host is confirmed → open a session
+        session: dict[str, Any] | None = None
+        for f in eng.store.findings(FindingState.CONFIRMED):
+            if self._is_foothold_capable(f) and f.asset == host:
+                with contextlib.suppress(AttackEngineError):
+                    session = self.establish_foothold(external_id, f.id, actor=actor)
+                if session:
+                    break
+
+        refreshed = next((c for c in (wm.chains() if wm else []) if c.id == chain.id), chain)
+        realised = refreshed.is_realised
+        self._runs.setdefault(eid, []).append({
+            "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+            "agent_name": "Attack Chain", "role": "offensive", "status": "completed",
+            "detection_rate": None, "started_at": utcnow().isoformat(),
+            "ended_at": utcnow().isoformat(),
+            "summary": (f"{chain.objective} — realised={realised} · depth="
+                        f"{refreshed.confirmed_depth}/{len(refreshed.steps)}"
+                        f"{' · session ' + session['id'] if session else ''}"),
+            "steps": [{"phase": s.kind, "target": host,
+                       "status": "completed" if s.confirmed else "running",
+                       "result": "confirmed" if s.confirmed else "pending"}
+                      for s in sorted(refreshed.steps, key=lambda s: s.order)],
+            "detections": [], "approvals_created": 0,
+        })
+        self._emit(eid, "chain.executed",
+                   {"chain": chain.id, "realised": realised,
+                    "session": session["id"] if session else None})
+        return {"chain_id": chain.id, "objective": chain.objective,
+                "realised": realised, "confirmed_depth": refreshed.confirmed_depth,
+                "steps": len(refreshed.steps), "session": session}
+
     def vuln_scan(self, external_id: str) -> tuple[VerifyReport, MatchReport]:
         """Thoroughly screen web surfaces, run the accuracy oracles, correlate CVEs.
 
@@ -885,6 +957,8 @@ class EngineAdapter:
                 self.run_agent(external_id, job.get("agent_id") or "")
             elif kind == "foothold":
                 self.establish_foothold(external_id, job.get("ref") or "")
+            elif kind == "chain-exec":
+                self.execute_chain(external_id, job.get("ref") or "")
             else:
                 raise AttackEngineError(f"unknown job kind {kind!r}")
             job["status"] = "done"
@@ -1508,6 +1582,79 @@ class EngineAdapter:
         return {"running": is_running, "active_phase": active_phase,
                 "current": current, "started_at": started_at,
                 "elapsed_sec": round(elapsed, 1), "stages": stages}
+
+    def authorization_view(
+        self, external_id: str, roe: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """The rules-of-engagement control room: what the AI is authorized to do.
+
+        Classifies every ATT&CK technique, tool, and high-impact action against the
+        engagement's signed RoE using the SAME policy the runtime enforces:
+        **autonomous** (pre-authorized → runs unattended), **gated** (runs but human-
+        approved), **gated-evasion** (defense-evasion — always gated), or **denied**
+        (tool on the denylist / off an exclusive allowlist). The operator toggles a
+        row → the console edits the RoE (PUT /roe) → re-activate applies it. Uses the
+        live scope when active, else a preview scope from the stored RoE.
+        """
+
+        from ..attack.catalog import build_library
+        from ..governance.authorization import AuthorizationDecision, AuthorizationPolicy
+        from ..orchestrator.adversary import EVASION_TECHNIQUES
+
+        if self.is_open(external_id):
+            scope = self.engagement(external_id).scope
+            live = True
+        elif roe is not None:
+            scope = scope_from_roe(external_id, roe,
+                                   authorized_by=roe.get("signed_by"),
+                                   signature=roe.get("signature"))
+            live = False
+        else:
+            return {"live": False, "tier": 0, "read_only": True, "signed": False,
+                    "techniques": [], "tools": [], "actions": [], "counts": {}}
+
+        r = scope.roe
+        policy = AuthorizationPolicy(scope)
+        techniques = []
+        for t in build_library().all():
+            if t.id in EVASION_TECHNIQUES:
+                status = "gated-evasion"
+            elif policy.decide(t.id, t.id) is AuthorizationDecision.AUTONOMOUS:
+                status = "autonomous"
+            else:
+                status = "gated"
+            techniques.append({
+                "id": t.id, "name": t.name, "tactic": t.tactic.value,
+                "status": status, "authorized": t.id in r.authorized_techniques,
+                "evasion": t.id in EVASION_TECHNIQUES,
+            })
+        tools = []
+        registry = self._engine.registry
+        names = sorted(registry.names()) if hasattr(registry, "names") else []
+        for n in names:
+            forbidden = n in r.forbidden_tools
+            on_allow = n in r.allowed_tools
+            allow_ok = (not r.allowed_tools) or on_allow
+            licensed = False
+            with contextlib.suppress(Exception):
+                licensed = bool(getattr(registry.resolve(n), "licensed", False))
+            tools.append({
+                "tool": n, "status": "denied" if (forbidden or not allow_ok) else "allowed",
+                "forbidden": forbidden, "on_allowlist": on_allow, "licensed": licensed,
+            })
+        actions = [{"action": a, "status": "gated", "reason": "high-impact — always gated"}
+                   for a in sorted(r.high_impact_actions)]
+        counts = {
+            "autonomous": sum(1 for t in techniques if t["status"] == "autonomous"),
+            "gated": sum(1 for t in techniques if t["status"] in ("gated", "gated-evasion")),
+            "tools_allowed": sum(1 for t in tools if t["status"] == "allowed"),
+            "tools_denied": sum(1 for t in tools if t["status"] == "denied"),
+        }
+        return {
+            "live": live, "tier": r.autonomy_tier, "read_only": r.read_only,
+            "signed": scope.is_signed(), "allowlist_mode": bool(r.allowed_tools),
+            "techniques": techniques, "tools": tools, "actions": actions, "counts": counts,
+        }
 
     def world_model_view(self, external_id: str) -> dict[str, Any]:
         """Serialize the engagement's registered world model for the console.
