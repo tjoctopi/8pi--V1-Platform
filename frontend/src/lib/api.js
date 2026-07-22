@@ -53,6 +53,8 @@ export const api = {
   resume: (id) => http.post(`/engagements/${id}/resume`).then((r) => r.data),
   archiveEngagement: (id) => http.post(`/engagements/${id}/archive`).then((r) => r.data),
   unarchiveEngagement: (id) => http.post(`/engagements/${id}/unarchive`).then((r) => r.data),
+  purgeEngagement: (id) => http.post(`/engagements/${id}/purge`).then((r) => r.data),
+  deleteEngagement: (id) => http.delete(`/engagements/${id}`).then((r) => r.data),
 
   // sensing / assets / map  (sense + vulnScan now start a background job)
   sense: (id) => http.post(`/engagements/${id}/sense`).then((r) => r.data),

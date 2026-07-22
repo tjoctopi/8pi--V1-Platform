@@ -28,6 +28,11 @@ ae_pg_user: ae
 ae_audit_backend: sqlite
 ae_audit_sqlite_path: /app/data/audit.db
 ae_api_db: /app/data/api_shell.db
+# Results store: sqlite on the same persistent /app/data volume so engagement
+# assets/findings/tool-runs survive an API container restart/redeploy (they
+# rehydrate on re-open). Flip to postgres for multi-node with no other change.
+ae_store_backend: sqlite
+ae_store_sqlite_path: /app/data/store.db
 # SECURITY-SENSITIVE: when true, the engine runs the offensive pipeline on test
 # authorization (bypasses signed-scope). Intended for the pilot ONLY. Set to
 # false for real production (with signed-scope authorization + managed data).

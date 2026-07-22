@@ -115,6 +115,42 @@ class CommandBody(BaseModel):
     command: str
 
 
+# ── startup: rehydrate live engagements ─────────────────────────────────────
+
+def _reopen_active_engagements(store: ShellStore, adapter: EngineAdapter) -> None:
+    """Re-open previously-active engagements on API start so results reappear after a
+    deploy/restart without a manual re-activate. Re-opening rebuilds each engagement's
+    KnowledgeStore, which rehydrates its persisted assets/findings from the durable
+    backend. Best-effort per engagement — one failure never blocks startup.
+    """
+
+    import structlog
+
+    log = structlog.get_logger("api.startup")
+    for doc in store.list_engagements():
+        if doc.get("status") != "active" or doc.get("archived"):
+            continue
+        eid = doc["id"]
+        roe = doc.get("roe") or {}
+        try:
+            if roe.get("signature"):
+                scope = scope_from_roe(eid, roe, authorized_by=roe.get("signed_by"),
+                                       signature=roe.get("signature"))
+                adapter.open(scope, require_signed=False)
+            elif os.environ.get("AE_ALLOW_TEST_AUTH", "").lower() in ("1", "true", "yes"):
+                targets = roe.get("scope_allowlist") or doc.get("estate", {}).get("seeds", [])
+                if targets:
+                    adapter.open_for_testing(eid, targets)
+                else:
+                    continue
+            else:
+                continue
+            log.info("engagement rehydrated on startup", engagement=eid,
+                     assets=len(adapter.assets(eid)), findings=len(adapter.findings(eid)))
+        except Exception as exc:
+            log.warning("could not rehydrate engagement", engagement=eid, error=str(exc))
+
+
 # ── app factory ───────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
@@ -125,6 +161,7 @@ def create_app() -> FastAPI:
         seeded = seed_admin(app.state.store)
         if seeded:
             app.state.logger_admin = seeded
+        _reopen_active_engagements(app.state.store, app.state.adapter)
         yield
         app.state.store.close()
 
@@ -483,6 +520,28 @@ def create_app() -> FastAPI:
         store().save_engagement(doc)
         adapter().record_governance(eid, actor=user["email"], action="engagement.unarchived")
         return {"archived": False}
+
+    @api.post("/engagements/{eid}/purge")
+    async def purge(
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Clear an engagement's RESULTS (assets/findings/tool-runs/agent-runs) —
+        durable + in-memory — keeping the engagement, RoE, and audit chain."""
+
+        _load(eid)
+        return adapter().purge_engagement(eid, actor=user["email"])
+
+    @api.delete("/engagements/{eid}")
+    async def delete_engagement(
+        eid: str, user: dict[str, Any] = Depends(require_role("operator"))
+    ) -> dict[str, Any]:
+        """Delete an engagement and its persisted results. The immutable audit chain
+        is preserved (a ``engagement.deleted`` entry records the deletion)."""
+
+        _load(eid)
+        result = adapter().delete_engagement(eid, actor=user["email"])
+        store().delete_engagement(eid)  # shell metadata keyed by the external id
+        return result
 
     # ── recon / assets ────────────────────────────────────────────────────
     def _require_open(eid: str) -> None:

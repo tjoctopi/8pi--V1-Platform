@@ -29,6 +29,19 @@ class AuditBackend(str, Enum):
     POSTGRES = "postgres"
 
 
+class StoreBackend(str, Enum):
+    """Durability for engagement RESULTS (assets/findings/remediations/tool-runs).
+
+    ``memory`` (default) keeps them in-process — the zero-service test posture and
+    single-run demos. ``sqlite``/``postgres`` persist them so results survive an API
+    restart/redeploy and the store rehydrates when the engagement re-opens.
+    """
+
+    MEMORY = "memory"
+    SQLITE = "sqlite"
+    POSTGRES = "postgres"
+
+
 class EventBusBackend(str, Enum):
     MEMORY = "memory"
     REDIS = "redis"
@@ -79,6 +92,14 @@ class Settings(BaseSettings):
     audit_backend: AuditBackend = AuditBackend.SQLITE
     audit_sqlite_path: Path = Path("./data/audit.db")
     audit_postgres_dsn: SecretStr | None = None
+
+    # --- engagement results store (assets/findings/remediations/tool-runs) ---
+    # Default MEMORY keeps the zero-service test posture; a deployment sets
+    # AE_STORE_BACKEND=sqlite (pilot) or =postgres (scale) so results survive a
+    # restart and the store rehydrates on engagement re-open.
+    store_backend: StoreBackend = Field(default=StoreBackend.MEMORY, alias="AE_STORE_BACKEND")
+    store_sqlite_path: Path = Field(default=Path("./data/store.db"), alias="AE_STORE_SQLITE_PATH")
+    store_postgres_dsn: SecretStr | None = Field(default=None, alias="AE_STORE_POSTGRES_DSN")
 
     # --- knowledge graph backend ---
     graph_backend: GraphBackendKind = GraphBackendKind.NETWORKX

@@ -281,6 +281,14 @@ class EngineAdapter:
             gate_responder=responder, require_signed=require_signed,
         )
         self._scopes[scope.engagement_id] = scope
+        # Rehydrate the Console's agent-run history from the durable backend (the
+        # engagement store itself rehydrates its assets/findings in KnowledgeStore).
+        backend = self._engine.knowledge_backend
+        if backend is not None and scope.engagement_id not in self._runs:
+            with contextlib.suppress(Exception):
+                runs = backend.load_agent_runs(scope.engagement_id)
+                if runs:
+                    self._runs[scope.engagement_id] = runs
         return eng
 
     def open_for_testing(
@@ -333,9 +341,72 @@ class EngineAdapter:
         self._manager.close(eid, self._service)
         self._scopes.pop(eid, None)
 
+    def _forget_runtime(self, eid: str) -> None:
+        """Drop all in-process runtime state for an engagement id."""
+
+        for d in (self._runs, self._footholds, self._jobs, self._events,
+                  self._retests, self._scopes):
+            d.pop(eid, None)
+        self._campaign_stage.pop(eid, None)
+        self._busy.discard(eid)
+
+    def purge_engagement(self, external_id: str, *, actor: str = "operator") -> dict[str, Any]:
+        """Wipe an engagement's RESULTS (assets/findings/remediations/tool-runs/agent-
+        runs) — durable + in-memory — but keep the engagement, its RoE, and the
+        immutable audit chain. The operator's "clear results / start fresh" control.
+        """
+
+        eid = engagement_id_for(external_id)
+        backend = self._engine.knowledge_backend
+        if backend is not None:
+            with contextlib.suppress(Exception):
+                backend.delete(eid)
+        self._runs.pop(eid, None)
+        self._footholds.pop(eid, None)
+        self._retests.pop(eid, None)
+        # re-open on a clean store so the live handle reflects the purge immediately
+        scope = self._scopes.get(eid)
+        if scope is not None:
+            with contextlib.suppress(AttackEngineError):
+                self._manager.close(eid, self._service)
+            self.open(scope)
+        self.record_governance(eid, actor=actor, action="engagement.purged",
+                               target=eid, payload={"scope": "results"})
+        return {"ok": True, "purged": "results"}
+
+    def delete_engagement(self, external_id: str, *, actor: str = "operator") -> dict[str, Any]:
+        """Delete an engagement entirely: close the live handle, wipe its persisted
+        results, and drop all runtime state. Records ``engagement.deleted`` on the
+        (immutable) audit chain first — deletion never touches the audit log itself.
+        The API removes the shell metadata doc.
+        """
+
+        eid = engagement_id_for(external_id)
+        with contextlib.suppress(Exception):
+            self.record_governance(eid, actor=actor, action="engagement.deleted",
+                                   target=eid, payload={})
+        backend = self._engine.knowledge_backend
+        if backend is not None:
+            with contextlib.suppress(Exception):
+                backend.delete(eid)
+        with contextlib.suppress(AttackEngineError):
+            self._manager.close(eid, self._service)
+        self._forget_runtime(eid)
+        return {"ok": True, "deleted": eid}
+
     # ── operations (real engine work) ──────────────────────────────────────
+    def _persist_run(self, eid: str, run: dict[str, Any]) -> None:
+        """Record an agent/campaign run summary + persist it so the Console's Agent
+        Runs list survives an API restart (rehydrated on engagement re-open)."""
+
+        self._runs.setdefault(eid, []).append(run)
+        backend = self._engine.knowledge_backend
+        if backend is not None:
+            with contextlib.suppress(Exception):
+                backend.save_agent_run(eid, run)
+
     def _record_run(self, eid: str, report: Any, *, name: str, role: str) -> None:
-        self._runs.setdefault(eid, []).append({
+        self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": name, "role": role, "status": "completed",
             "detection_rate": None, "started_at": utcnow().isoformat(),
@@ -370,7 +441,7 @@ class EngineAdapter:
             summary += f" · objective_met={met}"
         if extra:
             summary += f" · {extra}"
-        self._runs.setdefault(eid, []).append({
+        self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": name, "role": role, "status": "completed",
             "detection_rate": None, "started_at": utcnow().isoformat(),
@@ -586,7 +657,7 @@ class EngineAdapter:
         }
         self._emit(eid, "c2.foothold", {"session": sess.id, "host": finding.asset,
                                         "whoami": foothold.proof.get("whoami", "?")})
-        self._runs.setdefault(eid, []).append({
+        self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": "Foothold", "role": "offensive", "status": "completed",
             "detection_rate": None, "started_at": utcnow().isoformat(),
@@ -710,7 +781,7 @@ class EngineAdapter:
 
         refreshed = next((c for c in (wm.chains() if wm else []) if c.id == chain.id), chain)
         realised = refreshed.is_realised
-        self._runs.setdefault(eid, []).append({
+        self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": "Attack Chain", "role": "offensive", "status": "completed",
             "detection_rate": None, "started_at": utcnow().isoformat(),
@@ -818,7 +889,7 @@ class EngineAdapter:
         with contextlib.suppress(AttackEngineError):
             eng.correlate()
         self._compose_chains(eng)
-        self._runs.setdefault(eid, []).append({
+        self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": "Adversary Campaign", "role": "offensive",
             "status": "completed", "detection_rate": None,
@@ -863,7 +934,7 @@ class EngineAdapter:
                 verify = eng.verify()
             with contextlib.suppress(AttackEngineError):
                 match = eng.correlate()
-            self._runs.setdefault(eid, []).append({
+            self._persist_run(eid, {
                 "id": f"run-{len(self._runs.get(eid, [])) + 1}",
                 "agent_name": "Exploit Confirmer", "role": "offensive",
                 "status": "completed", "detection_rate": None,
