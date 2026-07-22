@@ -7,12 +7,23 @@ const COLOR = { done: "#FF00A0", active: "#FFB020", pending: "#4A4A4A" };
 // Live kill-chain progression bar. Self-contained: polls campaign-status so it
 // advances on every step (recon → confirm → foothold → escalate → lateral →
 // objective) whichever tab it sits in, backed by the engine's world model.
+function fmtElapsed(s) {
+  s = Math.max(0, Math.floor(s));
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
 export default function KillChainProgress({ eid, className = "", compact = false }) {
   const [status, setStatus] = useState(null);
+  const [, setTick] = useState(0);
   const timer = useRef(null);
+  const base = useRef({ elapsed: 0, at: 0 }); // server elapsed + local anchor → smooth 1s tick, no clock skew
 
   const refresh = useCallback(() => {
-    api.campaignStatus(eid).then(setStatus).catch(() => {});
+    api.campaignStatus(eid).then((s) => {
+      if (s?.running) base.current = { elapsed: s.elapsed_sec || 0, at: Date.now() };
+      setStatus(s);
+    }).catch(() => {});
   }, [eid]);
 
   useEffect(() => {
@@ -20,13 +31,18 @@ export default function KillChainProgress({ eid, className = "", compact = false
     // poll every 4s — light derived endpoint; keeps the bar live during long,
     // minutes-per-step recon/exploit runs without fighting the SSE event queue.
     timer.current = setInterval(refresh, 4000);
-    return () => clearInterval(timer.current);
+    // 1s ticker so the elapsed timer counts up smoothly between polls.
+    const tick = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => { clearInterval(timer.current); clearInterval(tick); };
   }, [refresh]);
 
   if (!status) return null;
   const stages = status.stages || [];
   const doneCount = stages.filter((s) => s.status === "done").length;
   const pct = stages.length ? Math.round((doneCount / stages.length) * 100) : 0;
+  const elapsed = status.running
+    ? fmtElapsed(base.current.elapsed + (Date.now() - base.current.at) / 1000)
+    : null;
 
   // Compact one-line variant for the persistent engagement header.
   if (compact) {
@@ -49,7 +65,7 @@ export default function KillChainProgress({ eid, className = "", compact = false
           })}
         </div>
         <span className="mono text-[10px] shrink-0" style={{ color: status.running ? "#FFB020" : "#7A7A7A" }}>
-          {status.running ? `▶ ${status.active_phase}` : `${pct}%`}
+          {status.running ? `▶ ${status.active_phase} · ${elapsed}` : `${pct}%`}
         </span>
       </div>
     );
@@ -61,7 +77,7 @@ export default function KillChainProgress({ eid, className = "", compact = false
         <span className="label">Kill-Chain Progress</span>
         {status.running ? (
           <span className="flex items-center gap-1.5 text-[11px] mono text-warn">
-            <span className="w-2 h-2 rounded-full bg-warn blink" /> RUNNING · {status.active_phase}
+            <span className="w-2 h-2 rounded-full bg-warn blink" /> RUNNING · {status.active_phase} · {elapsed}
           </span>
         ) : (
           <span className="text-[11px] mono text-muted">idle</span>

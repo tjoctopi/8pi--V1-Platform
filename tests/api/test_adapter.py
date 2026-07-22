@@ -280,6 +280,16 @@ def test_deterministic_web_sweep_graduates_from_crawl(
     assert findings  # PROPOSED findings exist for verify() to confirm
 
 
+def test_vuln_scan_auto_recons_when_no_web_surface(adapter: EngineAdapter) -> None:
+    # Deployed regression: running Vuln Scan without a prior Sense must still work —
+    # the sweep auto-runs recon on the authorized targets so there's a surface to
+    # crawl, instead of silently finding nothing.
+    _open_signed(adapter, "selfsuff-1")
+    assert adapter.assets("selfsuff-1") == []  # no recon yet
+    adapter.vuln_scan("selfsuff-1")
+    assert len(adapter.assets("selfsuff-1")) >= 1  # vuln_scan auto-ran recon
+
+
 def test_foothold_candidates_and_establish_guards(adapter: EngineAdapter) -> None:
     from attack_engine.schemas.findings import Finding, FindingState
 
