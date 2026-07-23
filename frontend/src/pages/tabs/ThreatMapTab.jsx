@@ -1,436 +1,490 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ForceGraph2D from "react-force-graph-2d";
-import { Graph, ArrowsOutSimple, MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsInSimple, ArrowsClockwise, StackSimple } from "@phosphor-icons/react";
+import {
+  TreeStructure, Play, Pause, SkipForward, ArrowCounterClockwise,
+  MagnifyingGlassPlus, MagnifyingGlassMinus, ArrowsIn, Crosshair, Skull,
+  LockKey, Package, Globe, ShieldCheck, Eye, EyeSlash,
+} from "@phosphor-icons/react";
 import { api } from "../../lib/api";
-import { riskBucket } from "../../lib/theme";
+import { SEV } from "../../lib/theme";
 import { Panel, SectionTitle, Btn, Badge, Loading, Empty } from "../../components/ui";
 
-/* — sizing hook (SVG-free, honors container width) — */
-function useSize(defaultH = 560) {
-  const [w, setW] = useState(0);
-  const roRef = useRef(null);
-  // Callback ref: fires when the node actually attaches to the DOM. This matters
-  // because the component early-returns <Loading>/<Empty> while data loads, so a
-  // plain useRef + useEffect([]) would run once with ref.current === null and
-  // never re-measure once the graph div finally mounts (→ w stuck at 0, blank).
-  const ref = useCallback((node) => {
-    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
-    if (!node) return;
-    const measure = () => {
-      const width =
-        node.clientWidth ||
-        Math.round(node.getBoundingClientRect().width) ||
-        node.parentElement?.clientWidth ||
-        0;
-      if (width > 0) setW(width);
-    };
-    const ro = new ResizeObserver(measure);
-    ro.observe(node);
-    roRef.current = ro;
-    measure();
-    requestAnimationFrame(measure);
-    setTimeout(measure, 150);
-  }, []);
-  return [ref, w, defaultH];
+/* ─── layout constants ─────────────────────────────────────────────────────── */
+const NODE_W = 176;
+const NODE_H = 62;
+const GAP_X = 30;
+const LANE_H = 138;
+const TOP_PAD = 54;
+const H = 640;
+
+const STATUS_DOT = { confirmed: "●", reachable: "◐", potential: "○" };
+
+// plain-language, defensible caption for a node (drives the replay narration)
+function caption(n) {
+  switch (n.phase) {
+    case "origin": return "Operation origin — authorized engagement entry.";
+    case "recon": return `Reconnaissance — mapped host ${n.label}.`;
+    case "initial-access":
+      return `Initial access — ${n.label}${n.cvss ? ` (CVSS ${n.cvss})` : ""}.`;
+    case "foothold": return `Foothold — live governed session as ${n.label}.`;
+    case "post-ex": return `Post-exploitation — ${n.label} captured.`;
+    case "escalate": return `Privilege escalation — owned ${n.label}.`;
+    case "lateral": return `Lateral movement — ${n.label}.`;
+    case "objective": return `Objective reached — ${n.label}.`;
+    default: return n.label;
+  }
 }
 
-/* — telemetry tooltip (React overlay, follows mouse) — */
-function Tooltip({ node, x, y }) {
-  if (!node) return null;
-  const b = riskBucket(node.risk);
+/* ─── deterministic layered (Sugiyama-lite) layout ─────────────────────────── */
+function useLayout(tree) {
+  return useMemo(() => {
+    if (!tree || !tree.nodes || tree.nodes.length === 0) return null;
+    const { nodes, edges } = tree;
+    const parents = {}, children = {};
+    edges.forEach((e) => {
+      (children[e.source] = children[e.source] || []).push(e.target);
+      (parents[e.target] = parents[e.target] || []).push(e.source);
+    });
+    // present depths → compact lane rows
+    const depths = [...new Set(nodes.map((n) => n.depth))].sort((a, b) => a - b);
+    const laneRow = Object.fromEntries(depths.map((d, i) => [d, i]));
+    const lanes = {};
+    nodes.forEach((n) => { (lanes[n.depth] = lanes[n.depth] || []).push(n); });
+
+    const px = {};  // per-node horizontal position (centered around 0)
+    depths.forEach((d) => lanes[d].forEach((n, i) => { px[n.id] = i; }));
+    // barycenter passes: pull each node over the mean of its parents, then re-space
+    for (let pass = 0; pass < 4; pass++) {
+      depths.forEach((d) => {
+        const lane = lanes[d];
+        lane.forEach((n) => {
+          const ps = (parents[n.id] || []).map((p) => px[p]).filter((v) => v != null);
+          n.__b = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : px[n.id];
+        });
+        const sorted = [...lane].sort((a, b) => a.__b - b.__b);
+        const totalW = sorted.length * NODE_W + (sorted.length - 1) * GAP_X;
+        const start = -totalW / 2 + NODE_W / 2;
+        sorted.forEach((n, i) => { px[n.id] = start + i * (NODE_W + GAP_X); });
+      });
+    }
+    // absolute coords
+    const pos = {};
+    let minX = Infinity, maxX = -Infinity, maxRow = 0;
+    nodes.forEach((n) => {
+      const x = px[n.id];
+      const y = TOP_PAD + laneRow[n.depth] * LANE_H;
+      pos[n.id] = { x, y };
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      maxRow = Math.max(maxRow, laneRow[n.depth]);
+    });
+    const contentW = (maxX - minX) + NODE_W + 220;   // room for left rail
+    const contentH = TOP_PAD + maxRow * LANE_H + NODE_H + 40;
+    const shift = -minX + 200;  // push everything right of the phase rail
+    nodes.forEach((n) => { pos[n.id].x += shift; });
+    const usedDepths = depths.map((d) => ({ depth: d, row: laneRow[d] }));
+    return { pos, parents, children, contentW, contentH, usedDepths };
+  }, [tree]);
+}
+
+/* ─── node card (pure SVG for crisp export + perf) ─────────────────────────── */
+function NodeCard({ n, x, y, selected, active, dimmed, onClick, onHover }) {
+  const solid = n.status === "confirmed";
+  const color = n.phase_color || "#7A7A7A";
+  const sev = SEV[n.severity];
+  const meter = n.cvss != null ? Math.max(0, Math.min(1, n.cvss / 10))
+    : { crit: 1, high: 0.8, med: 0.55, low: 0.3, info: 0.12 }[n.severity] || 0;
+  const stroke = selected ? "#FFFFFF" : active ? "#FFFFFF" : color;
+  const icon = { session: "▣", loot: "⛃", credential: "⚿", ad: "♛", objective: "★",
+    origin: "◎", asset: "▪", finding: "◆" }[n.kind] || "◆";
   return (
-    <div
-      className="absolute pointer-events-none z-40"
-      style={{ left: x + 14, top: y + 14, transform: y > 400 ? "translateY(-100%)" : undefined }}
-    >
-      <div className="bg-black/95 border shadow-2xl px-3 py-2.5 min-w-[240px] max-w-[320px]"
-        style={{ borderColor: node.layer_color }}>
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <span className="w-2 h-2" style={{ background: node.layer_color, boxShadow: `0 0 6px ${node.layer_color}` }} />
-          <span className="label" style={{ color: node.layer_color }}>{node.layer_label}</span>
-          <span className="ml-auto label">{node.type}</span>
-        </div>
-        <div className="mono text-xs text-white break-all mb-1">{node.label}</div>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[11px] mono">
-          {node.product && (
-            <div className="col-span-2"><span className="text-muted">stack </span><span className="text-white">{node.product}{node.version ? ` ${node.version}` : ""}</span></div>
-          )}
-          {node.port && <div><span className="text-muted">port </span><span className="text-info">{node.port}</span></div>}
-          <div>
-            <span className="text-muted">exposure </span>
-            <span style={{ color: node.exposure === "external" ? "#FF00A0" : "#B4B4B4" }}>{node.exposure || "?"}</span>
-          </div>
-          <div>
-            <span className="text-muted">risk </span>
-            <span style={{ color: b.color, fontWeight: b.color === "#FF2A2A" ? 900 : 600 }}>{node.risk}</span>
-          </div>
-          <div>
-            <span className="text-muted">findings </span>
-            <span style={{ color: node.open_findings > 0 ? "#FFB020" : "#B4B4B4" }}>{node.open_findings || 0}</span>
-          </div>
-        </div>
-        {node.top_finding && (
-          <div className="mt-2 pt-2 border-t border-line">
-            <div className="label mb-0.5">Top Finding</div>
-            <div className="text-[11px] text-sub truncate">{node.top_finding.title}</div>
-            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-              <span
-                className="text-[10px] uppercase font-bold px-1.5 py-0.5 border"
-                style={{
-                  color: node.top_finding.severity === "crit" ? "#FF2A2A" : node.top_finding.severity === "high" ? "#FF00A0" : "#FFB020",
-                  borderColor: node.top_finding.severity === "crit" ? "#FF2A2A" : node.top_finding.severity === "high" ? "#FF00A0" : "#FFB020",
-                  textShadow: node.top_finding.severity === "crit" ? "0 0 4px #FF2A2A" : undefined,
-                }}
-              >
-                {node.top_finding.severity}
-              </span>
-              {node.top_finding.exploitability === "confirmed" && (
-                <span className="text-[10px] uppercase font-black px-1.5 py-0.5 border"
-                  style={{ color: "#FF2A2A", borderColor: "#FF2A2A", textShadow: "0 0 4px #FF2A2A" }}>
-                  ▲ CONFIRMED
-                </span>
-              )}
-              {node.top_finding.kev && (
-                <span className="text-[10px] uppercase font-black px-1.5 py-0.5 border"
-                  style={{ color: "#FF2A2A", borderColor: "#FF2A2A", textShadow: "0 0 4px #FF2A2A" }}>
-                  ▲ CISA KEV
-                </span>
-              )}
-              {node.top_finding.cve_refs?.[0] && (
-                <span className="text-[10px] mono text-muted">{node.top_finding.cve_refs[0]}</span>
-              )}
-            </div>
-          </div>
-        )}
+    <g transform={`translate(${x - NODE_W / 2}, ${y - NODE_H / 2})`}
+      style={{ cursor: "pointer", opacity: dimmed ? 0.28 : 1, transition: "opacity .3s" }}
+      onClick={(e) => { e.stopPropagation(); onClick(n); }}
+      onMouseEnter={() => onHover(n)} onMouseLeave={() => onHover(null)}
+      data-testid={`tree-node-${n.id}`}>
+      {/* incident glow */}
+      {(solid && (n.kind === "session" || n.phase === "objective" || n.severity === "crit")) && (
+        <rect x={-3} y={-3} width={NODE_W + 6} height={NODE_H + 6} rx={9}
+          fill="none" stroke={color} strokeWidth={2} opacity={active ? 0.9 : 0.5}
+          className="ae-glow" />
+      )}
+      <rect width={NODE_W} height={NODE_H} rx={7} fill="#0A0A0C"
+        stroke={stroke} strokeWidth={selected || active ? 2 : 1.2}
+        strokeDasharray={solid ? "0" : "5 4"} />
+      {/* phase accent bar */}
+      <rect x={0} y={0} width={4} height={NODE_H} rx={2} fill={color} />
+      <text x={13} y={19} fontSize={12} fill={color} fontFamily="JetBrains Mono, monospace">{icon}</text>
+      <text x={30} y={19} fontSize={11.5} fill="#FFFFFF" fontFamily="JetBrains Mono, monospace">
+        {(n.label || "").length > 20 ? n.label.slice(0, 19) + "…" : n.label}
+      </text>
+      {/* technique tag */}
+      <text x={13} y={35} fontSize={9.5} fill="#7A7A7A" fontFamily="JetBrains Mono, monospace">
+        {n.technique?.id || n.kind} {n.status === "confirmed" ? "" : `· ${n.status}`}
+      </text>
+      {/* CVSS / severity meter */}
+      <rect x={13} y={44} width={NODE_W - 26} height={4} rx={2} fill="#1C1C22" />
+      <rect x={13} y={44} width={(NODE_W - 26) * meter} height={4} rx={2}
+        fill={sev?.color || color} />
+      {/* status glyph top-right */}
+      <text x={NODE_W - 12} y={19} fontSize={11} textAnchor="end"
+        fill={solid ? "#FF2A2A" : n.status === "reachable" ? "#FFB020" : "#7A7A7A"}>
+        {STATUS_DOT[n.status]}
+      </text>
+      {n.cvss != null && (
+        <text x={NODE_W - 12} y={52} fontSize={9} textAnchor="end"
+          fill={sev?.color || "#B4B4B4"} fontFamily="JetBrains Mono, monospace">{n.cvss}</text>
+      )}
+    </g>
+  );
+}
+
+/* ─── the tree canvas ──────────────────────────────────────────────────────── */
+function TreeCanvas({ tree, layout, w, sel, setSel, hover, setHover, active, motion }) {
+  const [view, setView] = useState({ k: 1, tx: 0, ty: 0 });
+  const drag = useRef(null);
+  const fittedFor = useRef(0);
+
+  // fit to container once we know the content + width
+  const fit = useCallback(() => {
+    if (!layout || !w) return;
+    const k = Math.min(1.1, Math.max(0.35, Math.min(w / layout.contentW, H / layout.contentH)));
+    setView({ k, tx: (w - layout.contentW * k) / 2, ty: 16 });
+  }, [layout, w]);
+  useEffect(() => {
+    if (layout && w && fittedFor.current !== layout.contentW) { fittedFor.current = layout.contentW; fit(); }
+  }, [layout, w, fit]);
+
+  const zoom = (factor) => setView((v) => ({ ...v, k: Math.max(0.25, Math.min(3, v.k * factor)) }));
+  const onWheel = (e) => {
+    e.preventDefault();
+    setView((v) => ({ ...v, k: Math.max(0.25, Math.min(3, v.k * (e.deltaY < 0 ? 1.1 : 0.9))) }));
+  };
+  const onDown = (e) => { drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty }; };
+  const onMove = (e) => {
+    if (!drag.current) return;
+    setView((v) => ({ ...v, tx: drag.current.tx + (e.clientX - drag.current.x), ty: drag.current.ty + (e.clientY - drag.current.y) }));
+  };
+  const onUp = () => { drag.current = null; };
+
+  // ancestors of the highlighted (hover or replay-active) node → light the path
+  const focusId = active?.id || hover?.id || null;
+  const onPath = useMemo(() => {
+    if (!focusId || !layout) return null;
+    const set = new Set([focusId]);
+    const walk = (id) => (layout.parents[id] || []).forEach((p) => { if (!set.has(p)) { set.add(p); walk(p); } });
+    walk(focusId);
+    return set;
+  }, [focusId, layout]);
+
+  if (!layout) return null;
+  const { pos } = layout;
+  const phaseMeta = Object.fromEntries((tree.phases || []).map((p) => [p.key, p]));
+
+  return (
+    <div className="relative" style={{ width: w, height: H, background: "#050506", overflow: "hidden" }}
+      onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+      onClick={() => setSel(null)} data-testid="attack-tree">
+      <svg width={w} height={H} style={{ display: "block", cursor: drag.current ? "grabbing" : "grab" }}>
+        <defs>
+          <pattern id="ae-grid" width="34" height="34" patternUnits="userSpaceOnUse">
+            <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#12131A" strokeWidth="1" />
+          </pattern>
+          <radialGradient id="ae-vig" cx="50%" cy="42%" r="75%">
+            <stop offset="55%" stopColor="#000000" stopOpacity="0" />
+            <stop offset="100%" stopColor="#000000" stopOpacity="0.55" />
+          </radialGradient>
+        </defs>
+        <rect x={0} y={0} width={w} height={H} fill="url(#ae-grid)" />
+        <g transform={`translate(${view.tx}, ${view.ty}) scale(${view.k})`}>
+          {/* phase swimlanes + left rail */}
+          {layout.usedDepths.map(({ depth, row }) => {
+            const key = (tree.nodes.find((n) => n.depth === depth) || {}).phase;
+            const meta = phaseMeta[key] || {};
+            const y = TOP_PAD + row * LANE_H;
+            return (
+              <g key={depth} data-testid={`tree-phase-${key}`}>
+                <line x1={0} y1={y - NODE_H / 2 - 20} x2={layout.contentW} y2={y - NODE_H / 2 - 20}
+                  stroke="#14151C" strokeWidth={1} />
+                <rect x={0} y={y - NODE_H / 2 - 20} width={5} height={LANE_H - 8} fill={meta.color || "#7A7A7A"} opacity={0.5} />
+                <text x={16} y={y - 4} fontSize={12} fill={meta.color || "#7A7A7A"}
+                  fontFamily="Barlow Condensed, sans-serif" letterSpacing="1.5"
+                  style={{ textTransform: "uppercase", fontWeight: 700 }}>{meta.label || key}</text>
+                <text x={16} y={y + 12} fontSize={9} fill="#4A4A52" fontFamily="JetBrains Mono, monospace">{meta.tactic || ""}</text>
+              </g>
+            );
+          })}
+          {/* edges */}
+          {tree.edges.map((e, i) => {
+            const s = pos[e.source], t = pos[e.target];
+            if (!s || !t) return null;
+            const y1 = s.y + NODE_H / 2, y2 = t.y - NODE_H / 2, my = (y1 + y2) / 2;
+            const d = `M ${s.x} ${y1} L ${s.x} ${my} L ${t.x} ${my} L ${t.x} ${y2}`;
+            const confirmed = e.status === "confirmed";
+            const lit = onPath && onPath.has(e.source) && onPath.has(e.target);
+            return (
+              <path key={i} d={d} fill="none"
+                stroke={lit ? "#FF2A2A" : confirmed ? "#FF00A0" : "#33343E"}
+                strokeWidth={lit ? 2.4 : confirmed ? 1.6 : 1}
+                strokeDasharray={confirmed ? (motion ? "6 5" : "0") : "3 5"}
+                opacity={confirmed ? 0.9 : 0.5}
+                className={confirmed && motion ? "ae-flow" : ""} />
+            );
+          })}
+          {/* origin pulse */}
+          {tree.nodes.filter((n) => n.kind === "origin").map((n) => (
+            <circle key="pulse" cx={pos[n.id].x} cy={pos[n.id].y} r={NODE_W / 1.7}
+              fill="none" stroke="#FFFFFF" strokeWidth={1}
+              className={motion ? "ae-pulse" : ""} opacity={0.16} />
+          ))}
+          {/* nodes */}
+          {tree.nodes.map((n) => (
+            <NodeCard key={n.id} n={n} x={pos[n.id].x} y={pos[n.id].y}
+              selected={sel === n.id} active={active?.id === n.id}
+              dimmed={!!focusId && onPath && !onPath.has(n.id)}
+              onClick={(nn) => setSel(nn.id)} onHover={setHover} />
+          ))}
+        </g>
+        <rect x={0} y={0} width={w} height={H} fill="url(#ae-vig)" pointerEvents="none" />
+      </svg>
+      {/* zoom controls */}
+      <div className="absolute top-3 right-3 z-20 flex items-center gap-1">
+        <Btn variant="dark" icon={MagnifyingGlassPlus} onClick={() => zoom(1.25)} data-testid="tree-zoom-in" />
+        <Btn variant="dark" icon={MagnifyingGlassMinus} onClick={() => zoom(0.8)} data-testid="tree-zoom-out" />
+        <Btn variant="dark" icon={ArrowsIn} onClick={fit} data-testid="tree-fit" />
       </div>
     </div>
   );
 }
 
-/* — layer legend with counts, filter-on-hover — */
-function LayerLegend({ layers, hover, setHover, activeSet, onToggle }) {
+/* ─── node detail panel ────────────────────────────────────────────────────── */
+function NodeDetail({ n }) {
+  if (!n) return (
+    <Panel className="p-5"><div className="text-sm text-muted">
+      Click a node to inspect the finding, the live foothold, or the captured proof.
+      Hover to trace its path from the origin.
+    </div></Panel>
+  );
+  const d = n.detail || {};
+  const sev = SEV[n.severity];
   return (
-    <Panel className="p-3">
-      <div className="flex items-center gap-2 mb-3 px-1">
-        <StackSimple size={14} weight="bold" className="text-sub" />
-        <span className="label">Ecosystem Layers</span>
+    <Panel className="p-5 fadein" data-testid="tree-node-detail">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className="label" style={{ color: n.phase_color }}>{n.phase}</span>
+        {n.status === "confirmed" ? <Badge color="#FF2A2A" dot>CONFIRMED</Badge>
+          : <Badge color={n.status === "reachable" ? "#FFB020" : "#7A7A7A"}>{n.status}</Badge>}
       </div>
-      <div className="space-y-1.5">
-        {layers.map((l) => {
-          const on = hover === l.key;
-          const active = activeSet.size === 0 || activeSet.has(l.key);
-          return (
-            <button
-              key={l.key}
-              onMouseEnter={() => setHover(l.key)}
-              onMouseLeave={() => setHover(null)}
-              onClick={() => onToggle(l.key)}
-              data-testid={`tm-layer-${l.key}`}
-              className={`w-full text-left px-2.5 py-2 border transition-colors ${on ? "bg-white/5" : "hover:bg-white/5"} ${!active ? "opacity-40" : ""}`}
-              style={{ borderColor: on ? l.color : "#1A1A1A" }}
-            >
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 shrink-0" style={{ background: l.color, boxShadow: on ? `0 0 8px ${l.color}` : "none" }} />
-                <span className="h-font text-sm uppercase tracking-widest2" style={{ color: on ? l.color : "#fff" }}>{l.label}</span>
-                <span className="ml-auto mono text-[11px] text-muted">{l.count}</span>
-              </div>
-              <div className="flex items-center justify-between mt-1 ml-4.5">
-                <span className="text-[10px] text-muted">
-                  {l.external > 0 && <span className="text-volt">▲ {l.external} ext</span>}
-                  {l.external > 0 && l.findings > 0 && <span className="text-muted"> · </span>}
-                  {l.findings > 0 && <span className="text-warn">{l.findings} finding{l.findings !== 1 ? "s" : ""}</span>}
-                  {!l.external && !l.findings && <span className="text-muted">clean</span>}
-                </span>
-                <span className="mono text-[10px] text-muted">R {l.risk}</span>
-              </div>
-            </button>
-          );
-        })}
+      <div className="h-font text-lg text-white break-all">{n.label}</div>
+      <div className="mt-3 space-y-2 text-sm">
+        {n.technique?.id && (
+          <div className="flex justify-between"><span className="text-muted">Technique</span>
+            <span className="mono text-xs text-sub">{n.technique.id}</span></div>
+        )}
+        {n.cvss != null && (
+          <div className="flex justify-between items-center"><span className="text-muted">CVSS</span>
+            <Badge color={sev?.color}>{n.cvss} · {sev?.label || n.severity}</Badge></div>
+        )}
+        {n.cve_refs?.length > 0 && (
+          <div className="flex justify-between"><span className="text-muted">CVE</span>
+            <span className="mono text-xs text-volt">{n.cve_refs.join(", ")}</span></div>
+        )}
+        {d.reachability_reason && (
+          <div><div className="label mt-2 mb-0.5">Reachability</div>
+            <div className="text-xs text-sub">{d.reachability_reason}</div></div>
+        )}
+        {d.remediation && (
+          <div><div className="label mt-2 mb-0.5">Remediation</div>
+            <div className="text-xs text-sub">{d.remediation}</div></div>
+        )}
+        {/* live foothold proof */}
+        {d.proof && Object.keys(d.proof).length > 0 && (
+          <div className="mt-2"><div className="label mb-1 text-incident">Foothold proof</div>
+            <div className="grid grid-cols-1 gap-1">
+              {Object.entries(d.proof).map(([k, v]) => (
+                <div key={k} className="bg-black border border-line px-2 py-1">
+                  <span className="label text-[9px]">{k} </span>
+                  <span className="mono text-[11px] text-volt break-all">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* proof-of-impact showcase */}
+        {d.loot?.length > 0 && (
+          <div className="mt-2"><div className="label mb-1 flex items-center gap-1"><Package size={11} /> Auto-run loot</div>
+            <div className="bg-black border border-line divide-y divide-white/5">
+              {d.loot.map((l, i) => (
+                <div key={i} className="px-2 py-1">
+                  <div className="mono text-[10px] text-volt">$ {l.command}</div>
+                  <div className="mono text-[11px] text-sub whitespace-pre-wrap break-all">{l.output || "(no output)"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {d.site_content && (
+          <div className="mt-2"><div className="label mb-1 flex items-center gap-1"><Globe size={11} /> Captured site content</div>
+            <div className="mono text-[10px] text-muted mb-1">{d.site_content.url} · HTTP {d.site_content.status}</div>
+            <pre className="bg-black border border-line p-2 text-[10px] mono text-sub max-h-40 overflow-auto whitespace-pre-wrap break-all">
+              {d.site_content.snippet || "(empty)"}{d.site_content.truncated ? "\n…(truncated)" : ""}
+            </pre>
+          </div>
+        )}
       </div>
     </Panel>
   );
 }
 
+/* ─── main tab ─────────────────────────────────────────────────────────────── */
 export default function ThreatMapTab({ eid }) {
-  const [map, setMap] = useState(null);
+  const [tree, setTree] = useState(null);
   const [sel, setSel] = useState(null);
   const [hover, setHover] = useState(null);
-  const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
-  const [hoverLayer, setHoverLayer] = useState(null);
-  const [activeLayers, setActiveLayers] = useState(new Set());
-  const [ref, w] = useSize();
-  const H = 620;
-  const fgRef = useRef(null);
+  const [w, setW] = useState(0);
+  const [motion, setMotion] = useState(
+    !(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)
+  );
+  const wrapRef = useRef(null);
 
-  useEffect(() => { api.threatMap(eid).then(setMap); }, [eid]);
+  // replay state machine (mirrors AttackPathTab's play/step/pause)
+  const [step, setStep] = useState(-1);
+  const [playing, setPlaying] = useState(false);
 
-  const data = useMemo(() => {
-    if (!map) return { nodes: [], links: [] };
-    // Filter by active layers if any picked. Also filter edges to only visible nodes.
-    const passes = (n) => (activeLayers.size === 0) || activeLayers.has(n.layer);
-    const nodes = map.nodes.filter(passes).map((n) => ({ ...n, __r: riskBucket(n.risk) }));
-    const nid = new Set(nodes.map((n) => n.id));
-    const links = map.edges
-      .filter((e) => nid.has(e.source) && nid.has(e.target))
-      .map((e) => ({ source: e.source, target: e.target }));
-    return { nodes, links };
-  }, [map, activeLayers]);
-
-  const nodeById = useMemo(() => Object.fromEntries((map?.nodes || []).map((n) => [n.id, n])), [map]);
-
-  const paintNode = useCallback((n, ctx, scale) => {
-    const isHost = !n.parent;
-    const b = n.__r || riskBucket(n.risk);
-    const baseR = isHost ? 8 : 5;
-    const r = sel === n.id ? baseR + 3 : baseR;
-    const dimmed = hoverLayer && n.layer !== hoverLayer;
-    // dashed halo when externally exposed
-    if (n.exposure === "external") {
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 5, 0, 2 * Math.PI);
-      ctx.setLineDash([2, 3]);
-      ctx.strokeStyle = `${b.color}${dimmed ? "44" : "aa"}`;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    // pulsing red glow for confirmed / KEV / crit
-    const incident = n.top_finding && (n.top_finding.exploitability === "confirmed" || n.top_finding.kev || n.top_finding.severity === "crit");
-    if (incident) {
-      const t = (Date.now() % 1400) / 1400;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 8 + t * 6, 0, 2 * Math.PI);
-      ctx.strokeStyle = `#FF2A2A${Math.floor((1 - t) * 200).toString(16).padStart(2, "0")}`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
-    // node core — layer color if healthy, incident-red if incident, sized by risk bucket
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = dimmed ? `${n.layer_color}33` : incident ? "#FF2A2A" : n.layer_color;
-    ctx.fill();
-    ctx.strokeStyle = sel === n.id ? "#FFFFFF" : incident ? "#FF2A2A" : n.layer_color;
-    ctx.lineWidth = sel === n.id ? 2 : 1;
-    ctx.stroke();
-    if (n.risk > 60 || sel === n.id) {
-      ctx.shadowColor = incident ? "#FF2A2A" : n.layer_color;
-      ctx.shadowBlur = 12;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r * 0.5, 0, 2 * Math.PI);
-      ctx.fillStyle = incident ? "#FF2A2A" : n.layer_color;
-      ctx.fill();
-      ctx.shadowBlur = 0;
-    }
-    // label on host nodes when zoomed in enough
-    if (isHost && scale > 0.7 && !dimmed) {
-      const label = n.label.length > 22 ? n.label.slice(0, 20) + "…" : n.label;
-      ctx.font = `${11 / scale}px JetBrains Mono, monospace`;
-      ctx.fillStyle = "#B4B4B4";
-      ctx.textAlign = "center";
-      ctx.fillText(label, n.x, n.y + r + 12 / scale);
-    }
-  }, [sel, hoverLayer]);
-
-  const paintLink = useCallback((link, ctx) => {
-    const s = typeof link.source === "object" ? link.source : nodeById[link.source];
-    const t = typeof link.target === "object" ? link.target : nodeById[link.target];
-    if (!s || !t) return;
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y);
-    ctx.lineTo(t.x, t.y);
-    ctx.strokeStyle = "#33333388";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }, [nodeById]);
-
-  const onNodeHover = useCallback((n) => {
-    setHover(n || null);
-    document.body.style.cursor = n ? "pointer" : "default";
-  }, []);
-
-  const onNodeClick = useCallback((n) => {
-    setSel(n.id);
-    fgRef.current?.centerAt(n.x, n.y, 800);
-    fgRef.current?.zoom(2.2, 800);
-  }, []);
-
-  const toggleLayer = (key) => {
-    setActiveLayers((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-    setSel(null);
-  };
+  useEffect(() => { api.attackTree(eid).then(setTree).catch(() => setTree({ nodes: [], edges: [], phases: [], summary: {} })); }, [eid]);
 
   useEffect(() => {
-    // physics tune-up: keep it slightly loose, cap animation for perf
-    const fg = fgRef.current;
-    if (!fg) return;
-    fg.d3Force("charge").strength(-140).distanceMax(400);
-    fg.d3Force("link").distance((l) => (typeof l.source === "object" && !l.source.parent && typeof l.target === "object" && l.target.parent ? 34 : 90));
-  }, [data.nodes.length]);
+    const measure = () => { if (wrapRef.current) setW(wrapRef.current.clientWidth); };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (wrapRef.current) ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, [tree]);
 
-  if (!map) return <Loading label="Building risk map" />;
-  if (map.nodes.length === 0)
-    return <Empty icon={Graph} title="No risk map yet" hint="Run Sensing and a Vuln Scan to build the living threat map (C-08)." />;
+  const layout = useLayout(tree);
 
-  const selNode = sel ? nodeById[sel] : null;
+  // the confirmed breach sequence the replay walks (depth-ordered)
+  const sequence = useMemo(() => {
+    if (!tree) return [];
+    return tree.nodes
+      .filter((n) => n.status === "confirmed" && n.kind !== "origin")
+      .sort((a, b) => a.depth - b.depth || (a.label < b.label ? -1 : 1));
+  }, [tree]);
+
+  useEffect(() => {
+    if (!playing) return undefined;
+    if (step >= sequence.length - 1) { setPlaying(false); return undefined; }
+    const t = setTimeout(() => setStep((s) => s + 1), 1600);
+    return () => clearTimeout(t);
+  }, [playing, step, sequence.length]);
+
+  const active = playing || step >= 0 ? sequence[Math.max(0, Math.min(step, sequence.length - 1))] : null;
+  const play = () => { if (!sequence.length) return; setStep(0); setPlaying(true); setSel(null); };
+  const pause = () => setPlaying(false);
+  const stepFwd = () => { setPlaying(false); setStep((s) => Math.min(s + 1, sequence.length - 1)); };
+  const reset = () => { setPlaying(false); setStep(-1); setSel(null); };
+
+  if (!tree) return <Loading label="Building attack tree" />;
+  if (!tree.nodes || tree.nodes.length <= 1) {
+    return <Empty icon={TreeStructure} title="No attack tree yet"
+      hint="Run Full Attack (or Sensing + Vuln Scan) on the Console — the engine confirms findings, lands footholds, and this builds the kill-chain tree from the real breach." />;
+  }
+
+  const s = tree.summary || {};
+  const selNode = sel ? tree.nodes.find((n) => n.id === sel) : null;
+  const focus = active || selNode;
+
+  const TILES = [
+    ["Entry points", s.entry_points || 0, "#00E5FF", Crosshair],
+    ["Confirmed", s.confirmed_findings || 0, "#FF00A0", ShieldCheck],
+    ["Live footholds", s.live_footholds || 0, "#FF2A2A", Skull],
+    ["Crown reached", s.crown_reached || 0, "#FFB020", LockKey],
+  ];
 
   return (
     <div className="grid lg:grid-cols-4 gap-6">
       <div className="lg:col-span-3 space-y-3">
         <SectionTitle
-          sub="Assets as nodes · relationships as edges · risk ranked by exploitable exposure (FR-TM-02). Scroll to zoom · drag to pan · drag nodes to reposition · hover for telemetry."
+          sub="The whole attack as a kill-chain tree — origin → initial access → foothold → post-exploitation → objective, built from the engine's real breach. Solid = confirmed / live; dashed = reachable but not yet confirmed. Press Play to walk the breach."
           right={
             <div className="flex items-center gap-1">
-              <Btn variant="dark" icon={MagnifyingGlassPlus} onClick={() => fgRef.current?.zoom(fgRef.current.zoom() * 1.3, 300)} data-testid="tm-zoom-in" />
-              <Btn variant="dark" icon={MagnifyingGlassMinus} onClick={() => fgRef.current?.zoom(fgRef.current.zoom() * 0.75, 300)} data-testid="tm-zoom-out" />
-              <Btn variant="dark" icon={ArrowsInSimple} onClick={() => fgRef.current?.zoomToFit(600, 60)} data-testid="tm-fit" />
-              <Btn variant="dark" icon={ArrowsClockwise} onClick={() => { setActiveLayers(new Set()); setSel(null); fgRef.current?.zoomToFit(600, 60); }} data-testid="tm-reset" />
-              <Btn variant="dark" icon={ArrowsOutSimple} onClick={() => fgRef.current?.zoomToFit(600, 30)} data-testid="tm-expand" />
+              {!playing ? (
+                <Btn variant="primary" icon={Play} onClick={play} data-testid="tree-play"
+                  disabled={!sequence.length}>Play Breach</Btn>
+              ) : (
+                <Btn variant="dark" icon={Pause} onClick={pause} data-testid="tree-pause">Pause</Btn>
+              )}
+              <Btn variant="dark" icon={SkipForward} onClick={stepFwd} data-testid="tree-step" />
+              <Btn variant="dark" icon={ArrowCounterClockwise} onClick={reset} data-testid="tree-reset" />
+              <Btn variant="dark" icon={motion ? Eye : EyeSlash} onClick={() => setMotion((m) => !m)}
+                data-testid="tree-motion" title={motion ? "Disable motion" : "Enable motion"} />
             </div>
           }
         >
-          Living Threat Map
+          Attack Tree
         </SectionTitle>
-        <div ref={ref} className="relative">
-          <Panel className="p-0 overflow-hidden" data-testid="threat-map-canvas">
+
+        <div ref={wrapRef}>
+          <Panel className="p-0 overflow-hidden" data-testid="attack-tree-canvas">
             {w > 0 && (
-              <div
-                onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setHoverPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-                }}
-                style={{ width: w, height: H, background: "#050505" }}
-              >
-                <ForceGraph2D
-                  ref={fgRef}
-                  graphData={data}
-                  width={w}
-                  height={H}
-                  backgroundColor="rgba(0,0,0,0)"
-                  cooldownTicks={80}
-                  d3AlphaDecay={0.02}
-                  nodeCanvasObject={paintNode}
-                  nodePointerAreaPaint={(n, color, ctx) => {
-                    ctx.beginPath();
-                    ctx.arc(n.x, n.y, 12, 0, 2 * Math.PI);
-                    ctx.fillStyle = color;
-                    ctx.fill();
-                  }}
-                  linkCanvasObject={paintLink}
-                  onNodeHover={onNodeHover}
-                  onNodeClick={onNodeClick}
-                  enableNodeDrag
-                  enableZoomInteraction
-                  enablePanInteraction
-                  minZoom={0.4}
-                  maxZoom={6}
-                  autoPauseRedraw={false}
-                />
-                <Tooltip node={hover} x={hoverPos.x} y={hoverPos.y} />
-              </div>
+              <TreeCanvas tree={tree} layout={layout} w={w} sel={sel} setSel={setSel}
+                hover={hover} setHover={setHover} active={active} motion={motion} />
             )}
           </Panel>
-          {/* legend + hints */}
-          <div className="flex flex-wrap gap-4 mt-3 text-xs">
-            {[
-              ["#FF2A2A", "critical / incident", true],
-              ["#FF00A0", "elevated", false],
-              ["#FFB020", "warning", false],
-              ["#7A7A7A", "clean", false],
-            ].map(([c, l, bold]) => (
-              <div key={l} className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5" style={{ background: c, boxShadow: bold ? `0 0 6px ${c}` : "none" }} />
-                <span className={bold ? "text-incident font-bold" : "text-sub"} style={bold ? { textShadow: `0 0 4px ${c}` } : {}}>{l}</span>
+          {/* replay caption + legend */}
+          <div className="flex flex-wrap items-center gap-4 mt-3 text-xs">
+            {active ? (
+              <div className="flex items-center gap-2 mono text-[11px]" data-testid="tree-caption">
+                <span className="w-2 h-2 rounded-full bg-volt blink" />
+                <span className="text-volt">HOP {step + 1}/{sequence.length}</span>
+                <span className="text-sub">{caption(active)}</span>
               </div>
-            ))}
-            <div className="flex items-center gap-1.5"><span className="w-3 h-3 border border-dashed" style={{ borderColor: "#FF00A0" }} /><span className="text-sub">external exposure</span></div>
-            <div className="ml-auto text-muted mono text-[10px]">{data.nodes.length} nodes · {data.links.length} links</div>
+            ) : (
+              <>
+                <span className="flex items-center gap-1.5 text-sub"><span className="text-incident">●</span> confirmed / live</span>
+                <span className="flex items-center gap-1.5 text-sub"><span className="text-warn">◐</span> reachable</span>
+                <span className="flex items-center gap-1.5 text-muted"><span>○</span> potential</span>
+                <span className="flex items-center gap-1.5 text-sub"><span style={{ color: "#FF00A0" }}>—</span> confirmed path</span>
+                <span className="flex items-center gap-1.5 text-muted"><span>┈</span> potential next step</span>
+              </>
+            )}
+            <span className="ml-auto text-muted mono text-[10px]">
+              {tree.nodes.length} nodes · {tree.edges.length} edges
+            </span>
           </div>
         </div>
       </div>
 
       <div className="space-y-4">
-        <LayerLegend
-          layers={map.layers || []}
-          hover={hoverLayer}
-          setHover={setHoverLayer}
-          activeSet={activeLayers}
-          onToggle={toggleLayer}
-        />
-
-        {selNode ? (
-          <Panel className="p-5 fadein" data-testid="map-node-detail">
-            <div className="label mb-2">Selected Asset</div>
-            <div className="h-font text-lg text-white break-all">{selNode.label}</div>
-            <div className="mt-3 space-y-2 text-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-muted">Layer</span>
-                <Badge color={selNode.layer_color}>{selNode.layer_label}</Badge>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted">Type</span>
-                <span className="mono text-xs text-sub uppercase">{selNode.type}</span>
-              </div>
-              {selNode.product && (
-                <div className="flex justify-between items-center gap-2">
-                  <span className="text-muted">Stack</span>
-                  <span className="mono text-xs text-white truncate">{selNode.product}{selNode.version ? ` ${selNode.version}` : ""}</span>
-                </div>
-              )}
-              {selNode.port && (
-                <div className="flex justify-between items-center">
-                  <span className="text-muted">Port</span>
-                  <span className="mono text-xs text-info">{selNode.port}</span>
-                </div>
-              )}
-              <div className="flex justify-between items-center">
-                <span className="text-muted">Exposure</span>
-                <Badge color={selNode.exposure === "external" ? "#FF00A0" : "#B4B4B4"}>{selNode.exposure}</Badge>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted">Risk score</span>
-                <Badge color={riskBucket(selNode.risk).color}>{selNode.risk}</Badge>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted">Open findings</span>
-                <span className="mono text-xs" style={{ color: selNode.open_findings > 0 ? "#FFB020" : "#B4B4B4" }}>{selNode.open_findings || 0}</span>
-              </div>
+        {/* breach summary tiles */}
+        <div className="grid grid-cols-2 gap-2">
+          {TILES.map(([label, val, color, Icon]) => (
+            <Panel key={label} className="p-3">
+              <div className="flex items-center gap-1.5 mb-1"><Icon size={13} style={{ color }} weight="fill" />
+                <span className="label text-[9px]">{label}</span></div>
+              <div className="h-font text-2xl font-black" style={{ color }}>{val}</div>
+            </Panel>
+          ))}
+        </div>
+        {s.domain_admin && (
+          <div className="kill-stripe p-0.5 rounded-sm" data-testid="tree-da-badge">
+            <div className="bg-panel2 px-4 py-3 flex items-center gap-3">
+              <LockKey size={20} className="text-incident" weight="fill" />
+              <span className="text-sm text-white font-semibold">Objective reached — Domain Admin</span>
             </div>
-          </Panel>
-        ) : (
-          <Panel className="p-5">
-            <div className="text-sm text-muted">Hover a node for telemetry, click to zoom in and inspect, drag nodes to reposition. Click a layer above to filter.</div>
-          </Panel>
+          </div>
         )}
 
-        <Panel className="p-5">
-          <div className="label mb-3">Top Risk (ranked)</div>
-          <div className="space-y-1">
-            {map.risk.slice(0, 10).map((r) => {
-              const n = nodeById[r.asset_id];
-              const b = riskBucket(r.score);
-              return (
-                <button
-                  key={r.asset_id}
-                  onClick={() => n && onNodeClick(n)}
-                  className="w-full flex items-center justify-between gap-2 text-left hover:bg-white/5 px-2 py-1.5 transition-colors"
-                >
-                  <div className="min-w-0">
-                    <div className="mono text-xs text-white truncate">{n?.label || r.asset_id.slice(0, 8)}</div>
-                    <div className="text-[10px]" style={{ color: n?.layer_color || "#7A7A7A" }}>{n?.layer_label || ""}</div>
-                  </div>
-                  <Badge color={b.color}>{r.score}</Badge>
-                </button>
-              );
-            })}
-            {map.risk.length === 0 && <div className="text-xs text-muted">No annotated risk yet — run a vuln scan.</div>}
-          </div>
-        </Panel>
+        <NodeDetail n={focus} />
       </div>
+
+      {/* scoped animation keyframes (professional, subtle, reduced-motion aware) */}
+      <style>{`
+        @keyframes ae-flow { to { stroke-dashoffset: -22; } }
+        .ae-flow { animation: ae-flow 1.1s linear infinite; }
+        @keyframes ae-pulse { 0% { transform: scale(0.6); opacity: .28 } 100% { transform: scale(1.5); opacity: 0 } }
+        .ae-pulse { transform-box: fill-box; transform-origin: center; animation: ae-pulse 3s ease-out infinite; }
+        @keyframes ae-glow { 0%,100% { opacity: .35 } 50% { opacity: .75 } }
+        .ae-glow { animation: ae-glow 2.2s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .ae-flow, .ae-pulse, .ae-glow { animation: none !important; } }
+      `}</style>
     </div>
   );
 }

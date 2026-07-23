@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from itertools import pairwise
 from typing import Any
 
 # ── shared palette (matches frontend/tailwind.config.js) ──────────────────────
@@ -438,6 +439,280 @@ def build_attack_path(
         "stats": {"entry": len(entry_ids), "pivot": len(pivot_ids),
                   "crown": len(crown_ids), "paths": len(paths), "chains": len(real_paths)},
     }
+
+
+# ── attack tree (kill-chain hierarchy) ───────────────────────────────────────
+
+#: Ordered kill-chain swimlanes — the depth levels of the intrusion, aligned to
+#: the engine's kill chain + MITRE tactics. ``depth`` is the index; the origin
+#: root sits in lane 0 and the objective at the bottom.
+_TREE_PHASES: tuple[tuple[str, str, str, str], ...] = (
+    ("origin", "Operation Origin", "", "Authorized engagement entry"),
+    ("recon", "Reconnaissance", "TA0043", "Attack surface mapped"),
+    ("initial-access", "Initial Access", "TA0001", "Exploitable entry proven"),
+    ("foothold", "Foothold", "TA0002", "Live governed session landed"),
+    ("post-ex", "Post-Exploitation", "TA0009", "Loot & captured content"),
+    ("escalate", "Privilege Escalation", "TA0004", "Credentials / privileges owned"),
+    ("lateral", "Lateral Movement", "TA0008", "Access reused across hosts"),
+    ("objective", "Objective", "TA0040", "Crown jewels reached"),
+)
+_PHASE_COLOR = {
+    "origin": _WHITE, "recon": _MUTED, "initial-access": _INFO, "foothold": _VOLT,
+    "post-ex": _VOLT, "escalate": _WARN, "lateral": _WARN, "objective": _INCIDENT,
+}
+_PHASE_INDEX = {p[0]: i for i, p in enumerate(_TREE_PHASES)}
+_ORIGIN_ID = "origin"
+#: Cap on unconfirmed initial-access candidate nodes shown before they fold into a
+#: single "+N more" summary — keeps the tree a readable breach story, not a wall.
+_MAX_POTENTIAL_NODES = 10
+
+
+def _hostkey(addr: str) -> str:
+    """Normalise an address for host matching (strip a CIDR/port suffix)."""
+
+    return str(addr or "").split("/", 1)[0].split(":", 1)[0].strip()
+
+
+def _tree_status(f: dict[str, Any]) -> str:
+    """A finding's tree status: confirmed (solid) · reachable · potential (dashed)."""
+
+    if f.get("status") == "confirmed" or f.get("exploitability") == "confirmed":
+        return "confirmed"
+    if f.get("exploitability") == "reachable" or f.get("reachable"):
+        return "reachable"
+    return "potential"
+
+
+def _tree_node(
+    node_id: str, phase: str, kind: str, label: str, status: str, *,
+    host: str = "", technique: dict[str, Any] | None = None,
+    severity: str | None = None, cvss: float | None = None,
+    cve_refs: tuple[str, ...] | list[str] = (), detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": node_id, "phase": phase, "depth": _PHASE_INDEX[phase], "kind": kind,
+        "label": label, "status": status, "host": host,
+        "phase_color": _PHASE_COLOR[phase], "technique": technique,
+        "severity": severity, "cvss": cvss, "cve_refs": list(cve_refs),
+        "detail": detail or {},
+    }
+
+
+def build_attack_tree(
+    assets: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+    *,
+    chains: list[dict[str, Any]] | None = None,
+    ad_paths: list[dict[str, Any]] | None = None,
+    sessions: list[dict[str, Any]] | None = None,
+    world_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble the whole attack as a kill-chain tree the console renders.
+
+    Deterministic (no model calls). Nodes are laid out by kill-chain phase
+    (:data:`_TREE_PHASES`); ``status`` drives solid (confirmed) vs dashed
+    (reachable/potential) rendering. Everything is derived from real engine
+    output — reachable assets, CONFIRMED/candidate findings with impact, live C2
+    sessions + their proof-of-impact, realised chains, and AD Domain-Admin paths —
+    so the tree is the true breach story, never a mock.
+    """
+
+    sessions = sessions or []
+    ad_paths = ad_paths or []
+    world_model = world_model or {}
+    nodes: list[dict[str, Any]] = [
+        _tree_node(_ORIGIN_ID, "origin", "origin", "OPS ORIGIN", "confirmed",
+                   detail={"note": "Authorized operation entry point."})
+    ]
+    edges: list[dict[str, Any]] = []
+
+    def add_edge(source: str, target: str, status: str) -> None:
+        edges.append({"source": source, "target": target, "status": status})
+
+    # phase presence per host, so we can wire a top-down lineage per host
+    host_phase: dict[str, dict[str, list[str]]] = {}
+
+    def register(node: dict[str, Any]) -> None:
+        nodes.append(node)
+        host_phase.setdefault(_hostkey(node["host"]), {}).setdefault(
+            node["phase"], []).append(node["id"])
+
+    # 1) Recon — every reachable asset (or one carrying findings) is a mapped host.
+    by_asset = _findings_by_asset(findings)
+    for a in assets:
+        addr = _asset_addr(a)
+        hk = _hostkey(addr)
+        if not hk:
+            continue
+        fs = by_asset.get(addr, [])
+        if not a.get("reachable") and not fs:
+            continue
+        register(_tree_node(
+            f"asset-{hk}", "recon", "asset", _asset_label(a),
+            "confirmed" if a.get("reachable") else "potential", host=addr,
+            detail={"exposure": a.get("exposure"), "type": a.get("type"),
+                    "open_findings": len(fs)},
+        ))
+
+    # 2) Initial access — real vulnerability findings (exposed-service rows are the
+    #    recon layer, so skip them here; their correlated CVEs still land as findings).
+    #    Keep the tree readable: render every CONFIRMED entry, plus the strongest
+    #    unconfirmed candidates up to a cap; the rest fold into one honest "+N more"
+    #    node (rule #8 — no silent truncation).
+    ia_findings = [f for f in findings
+                   if not str(f.get("type") or "").lower().startswith("exposed-service")]
+    confirmed_f = [f for f in ia_findings if _tree_status(f) == "confirmed"]
+    other_f = sorted(
+        (f for f in ia_findings if _tree_status(f) != "confirmed"),
+        key=lambda f: (_SEV_ORDER.get(f.get("severity", "info"), 9), -(f.get("cvss") or 0)),
+    )
+    shown_other = other_f[:_MAX_POTENTIAL_NODES]
+    for f in confirmed_f + shown_other:
+        ftype = str(f.get("type") or "").lower()
+        host = f.get("asset_id") or ""
+        register(_tree_node(
+            f"find-{f.get('id')}", "initial-access", "finding",
+            f.get("title") or f.get("id") or "finding", _tree_status(f), host=host,
+            technique={"id": f.get("technique_ref") or "T1190",
+                       "name": f.get("title") or ftype},
+            severity=f.get("severity"), cvss=f.get("cvss"),
+            cve_refs=f.get("cve_refs") or [],
+            detail={"remediation": f.get("remediation"),
+                    "reachability_reason": f.get("reachability_reason"),
+                    "exploitability": f.get("exploitability"),
+                    "status": f.get("status"), "type": ftype},
+        ))
+    hidden = len(other_f) - len(shown_other)
+    if hidden > 0:
+        register(_tree_node(
+            "find-more", "initial-access", "finding",
+            f"+{hidden} more reachable candidates", "potential",
+            detail={"note": "Additional lower-confidence injection candidates from "
+                            "the crawl — inspect the Findings tab for the full list."},
+        ))
+
+    # 3) Foothold — every live C2 session, with its proof-of-impact as a post-ex child.
+    for s in sessions:
+        sid = s.get("id")
+        host = s.get("host") or ""
+        proof = s.get("proof") or {}
+        whoami = proof.get("whoami") or "shell"
+        status = "confirmed" if s.get("status") != "closed" else "reachable"
+        register(_tree_node(
+            f"sess-{sid}", "foothold", "session", f"{whoami}@{_hostkey(host)}", status,
+            host=host, technique={"id": s.get("technique") or "T1190", "name": "Foothold"},
+            severity="crit", detail={"proof": proof, "session_id": sid,
+                                     "kind": s.get("kind"), "opened_at": s.get("opened_at")},
+        ))
+        loot = s.get("loot") or []
+        site = s.get("site_content")
+        if loot or site:
+            register(_tree_node(
+                f"loot-{sid}", "post-ex", "loot", "Loot & captured content", "confirmed",
+                host=host, detail={"loot": loot, "site_content": site},
+            ))
+            add_edge(f"sess-{sid}", f"loot-{sid}", "confirmed")
+
+    # 4) Escalation / lateral / objective — owned principals + AD Domain-Admin paths.
+    owned = world_model.get("owned_principals") or world_model.get("owned") or []
+    for i, principal in enumerate(owned):
+        register(_tree_node(
+            f"own-{i}", "escalate", "credential", str(principal), "confirmed",
+            technique={"id": "T1078", "name": "Valid Accounts"},
+            detail={"principal": principal},
+        ))
+    objective_ids: list[str] = []
+    for i, p in enumerate(ad_paths):
+        target = p.get("target", "Domain Admins")
+        oid = f"objective-ad-{i}"
+        register(_tree_node(
+            oid, "objective", "ad", f"Domain Admin — {target}", "confirmed",
+            technique={"id": "T1078", "name": "Domain Admin"},
+            severity="crit", detail={"start": p.get("start"), "target": target,
+                                     "techniques": p.get("techniques") or []},
+        ))
+        objective_ids.append(oid)
+    # A realised web/host chain that reaches a foothold is itself an objective when no
+    # AD path exists (the engagement's crown was a proven host compromise).
+    realised = [c for c in (chains or []) if c.get("is_realised")]
+    if not objective_ids and realised:
+        oid = "objective-chain"
+        register(_tree_node(
+            oid, "objective", "objective", "Objective reached — host compromised",
+            "confirmed", severity="crit",
+            detail={"chains": [c.get("objective") or c.get("id") for c in realised]},
+        ))
+        objective_ids.append(oid)
+
+    # ── wire the lineage: origin → recon → initial-access → foothold → post-ex,
+    #    per host, then the deepest host frontier → escalation/objective ──────────
+    _PHASE_FLOW = ["recon", "initial-access", "foothold", "post-ex"]
+    frontier: list[tuple[str, str]] = []  # (node_id, status) — deepest node per host
+    for _hk, phases in host_phase.items():
+        present = [ph for ph in _PHASE_FLOW if phases.get(ph)]
+        # origin → the shallowest present node(s) for this host
+        if present:
+            for nid in phases[present[0]]:
+                st = _node_status_by_id(nodes, nid)
+                add_edge(_ORIGIN_ID, nid, st)
+        # chain consecutive present phases (all parents → all children)
+        for a_ph, b_ph in pairwise(present):
+            for src in phases[a_ph]:
+                for dst in phases[b_ph]:
+                    add_edge(src, dst, _node_status_by_id(nodes, dst))
+        if present:
+            for nid in phases[present[-1]]:
+                frontier.append((nid, _node_status_by_id(nodes, nid)))
+
+    # escalation/objective: hang the AD/objective nodes off the deepest frontier
+    # (or origin if we never landed a foothold), so the tree always reaches its top.
+    esc_ids = [n["id"] for n in nodes if n["phase"] == "escalate"]
+    parents = [nid for nid, _ in frontier] or [_ORIGIN_ID]
+    for eid_ in esc_ids:
+        for parent in parents:
+            add_edge(parent, eid_, "confirmed")
+    obj_parents = esc_ids or [nid for nid, _ in frontier] or [_ORIGIN_ID]
+    for oid in objective_ids:
+        for parent in obj_parents:
+            add_edge(parent, oid, "confirmed")
+
+    # any node still without an incoming edge → attach to origin (never orphan)
+    has_parent = {e["target"] for e in edges}
+    for n in nodes:
+        if n["id"] != _ORIGIN_ID and n["id"] not in has_parent:
+            add_edge(_ORIGIN_ID, n["id"], n["status"])
+
+    # dedupe edges (a node can be wired by both the explicit post-ex link and the
+    # per-host phase flow); keep first occurrence / its status.
+    seen_edges: set[tuple[str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for e in edges:
+        key = (e["source"], e["target"])
+        if key in seen_edges:
+            continue
+        seen_edges.add(key)
+        deduped.append(e)
+    edges = deduped
+
+    ia_nodes = [n for n in nodes if n["phase"] == "initial-access"]
+    summary = {
+        "entry_points": len(ia_nodes),
+        "confirmed_findings": sum(1 for n in ia_nodes if n["status"] == "confirmed"),
+        "live_footholds": sum(1 for n in nodes
+                              if n["kind"] == "session" and n["status"] == "confirmed"),
+        "crown_reached": len(objective_ids),
+        "domain_admin": bool(ad_paths),
+    }
+    phase_defs = [{"key": k, "label": lbl, "tactic": t, "hint": h,
+                   "color": _PHASE_COLOR[k]} for k, lbl, t, h in _TREE_PHASES]
+    return {"phases": phase_defs, "nodes": nodes, "edges": edges, "summary": summary}
+
+
+def _node_status_by_id(nodes: list[dict[str, Any]], node_id: str) -> str:
+    for n in nodes:
+        if n["id"] == node_id:
+            return str(n["status"])
+    return "potential"
 
 
 # ── report summary ────────────────────────────────────────────────────────────
