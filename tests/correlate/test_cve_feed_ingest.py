@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from attack_engine.config import Settings
+from attack_engine.correlate.feeds import LocalCveFeed
 from attack_engine.correlate.nvd import (
     build_feed,
     build_feed_from_files,
@@ -96,3 +97,41 @@ def test_build_cve_feed_falls_back_to_seed(tmp_path) -> None:
     assert feed.match("widget", "1.4.1") == []  # not in the seed
     # the seed still carries its bundled Apache traversal CVE
     assert feed.is_kev("CVE-2021-41773") or feed.match("apache http server", "2.4.49")
+
+
+# --- the bundled offline feed covers the exploitable range services (#4) --------
+
+
+def _seed_feed() -> LocalCveFeed:
+    return LocalCveFeed.from_json()
+
+
+def test_offline_feed_correlates_range_service_cves() -> None:
+    # The classically-exploitable services on the range (the ones the network-
+    # exploit foothold path scans) must correlate to a CVE from the bundled feed
+    # WITHOUT any network — so the Vulnerability & Patch Loop lights up offline.
+    feed = _seed_feed()
+    cases = [
+        ("vsftpd", "2.3.4", "CVE-2011-2523"),
+        ("samba smbd", "3.0.20", "CVE-2007-2447"),
+        ("samba", "4.5.0", "CVE-2017-7494"),
+        ("distccd", None, "CVE-2004-2687"),
+        ("unrealircd", "3.2.8.1", "CVE-2010-2075"),
+    ]
+    for product, version, cve_id in cases:
+        ids = {r.id for r in feed.match(product, version)}
+        assert cve_id in ids, f"{product} {version} should correlate {cve_id}, got {ids}"
+
+
+def test_offline_feed_does_not_false_positive_on_patched_versions() -> None:
+    # Interval matching, not string matching: a patched vsftpd / newer Samba must
+    # NOT correlate the backdoor CVEs (the #1 false-positive source).
+    feed = _seed_feed()
+    assert not feed.match("vsftpd", "3.0.3")  # post-backdoor build
+    assert "CVE-2007-2447" not in {r.id for r in feed.match("samba", "4.5.0")}
+
+
+def test_offline_feed_marks_kev() -> None:
+    feed = _seed_feed()
+    assert feed.is_kev("CVE-2017-7494")  # SambaCry is on CISA KEV
+    assert not feed.is_kev("CVE-2004-2687")  # distcc design flaw is not

@@ -63,6 +63,26 @@ class TestKatana:
         search = next(e for e in parsed["endpoints"] if e["path"] == "/search")
         assert "q" in search["params"] and "cat" in search["params"]
 
+    def test_argv_extracts_forms(self) -> None:
+        # -fx/-aff make katana surface POST forms — the injection points (e.g. a
+        # dns-lookup form's target_host) a plain crawl never sees.
+        argv = KatanaWrapper().build_argv("10.5.0.12", ToolProfile())
+        assert "-fx" in argv and "-aff" in argv
+
+    def test_parse_post_form_fields(self) -> None:
+        # A filled POST form (katana -fx -aff): the body names each field, which
+        # become injectable candidates with their companions as fixed context.
+        raw = (
+            b'{"request":{"method":"POST",'
+            b'"endpoint":"http://10.5.0.12/mutillidae/index.php?page=dns-lookup.php",'
+            b'"body":"target_host=katana&dns-lookup-php-submit-button=Lookup+DNS"}}\n'
+        )
+        parsed = KatanaWrapper().parse("10.5.0.12", _res(raw))
+        form_ep = next(e for e in parsed["endpoints"] if e["method"] == "POST")
+        assert form_ep["form"]["target_host"] == "katana"
+        assert form_ep["form"]["dns-lookup-php-submit-button"] == "Lookup DNS"
+        assert form_ep["params"] == ["page"]
+
 
 class TestDalfox:
     def test_parse_findings(self) -> None:

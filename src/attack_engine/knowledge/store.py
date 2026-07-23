@@ -17,6 +17,7 @@ Two accuracy mechanics live here:
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from ..eventbus.base import EventPublisher
 from ..logging import get_logger
@@ -241,6 +242,7 @@ class KnowledgeStore:
         evidence: tuple[str, ...] = (),
         exploit_prob: float | None = None,
         priority: Priority | None = None,
+        metadata: dict[str, Any] | None = None,
         emitted_by: str = "verifier",
     ) -> Finding:
         """Advance a finding's state (the only sanctioned path — rule #1)."""
@@ -254,6 +256,7 @@ class KnowledgeStore:
                 evidence=evidence,
                 exploit_prob=exploit_prob,
                 priority=priority,
+                metadata=metadata,
             )
             self._findings[finding_id] = promoted
             if self._backend is not None:

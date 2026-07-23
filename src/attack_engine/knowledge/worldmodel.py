@@ -75,6 +75,7 @@ class WorldModel:
         suggested_tools: tuple[str, ...] = (),
         created_by: str = "ideator",
         observations: tuple[Observation, ...] = (),
+        context: dict[str, object] | None = None,
     ) -> Hypothesis:
         """Register a new lead. Initial confidence is the prior, fused with any
         seed observations."""
@@ -91,6 +92,7 @@ class WorldModel:
             observations=tuple(observations),
             suggested_tools=tuple(suggested_tools),
             created_by=created_by,
+            context=dict(context or {}),
         )
         with self._lock:
             self._hypotheses[hypo.id] = hypo

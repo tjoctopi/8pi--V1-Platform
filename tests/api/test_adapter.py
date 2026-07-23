@@ -10,6 +10,7 @@ console RoE → signed Scope → real recon/verify/correlate → console-shaped 
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 
@@ -166,6 +167,36 @@ def test_finding_severity_and_exploitability_buckets() -> None:
         rejected_reason="oracle disproved",
     )
     assert finding_to_json(rejected)["status"] == "false-positive"
+
+
+def test_correlated_finding_lands_in_vuln_loop_lane() -> None:
+    # A matcher-confirmed vuln (carries correlation output) → console vuln-loop.
+    cve = Finding(
+        engagement_id="eng-x", asset="10.5.0.10", type="CVE-2021-41773",
+        state=FindingState.CONFIRMED, verified_by="interval_match_oracle_v1",
+        proposed_by="exploitability_matcher",
+        metadata={"cvss": 9.8, "reachability_reason": "reachable from entry"},
+    )
+    assert finding_to_json(cve)["source"] == "vuln-loop"
+
+    proven_vuln = Finding(
+        engagement_id="eng-x", asset="10.5.0.12", type="command-injection",
+        state=FindingState.CONFIRMED, verified_by="cmdi_exec_oracle_v1",
+        proposed_by="web-inquisitor",
+        metadata={"cvss": 9.8, "remediation": "no shell",
+                  "reachability_reason": "proven by live probe"},
+    )
+    # Emitter was the web agent, but the correlation output puts it in the loop.
+    assert finding_to_json(proven_vuln)["source"] == "vuln-loop"
+
+
+def test_uncorrelated_finding_keeps_its_emitter() -> None:
+    # A recon/port finding with no correlation output keeps its raw emitter.
+    port = Finding(
+        engagement_id="eng-x", asset="10.5.0.10", type="exposed-service:80/tcp",
+        proposed_by="surface-mapper",
+    )
+    assert finding_to_json(port)["source"] == "surface-mapper"
 
 
 # ── full wire: console RoE → real recon → console JSON ───────────────────────
@@ -352,6 +383,87 @@ def test_foothold_candidates_and_establish_guards(adapter: EngineAdapter) -> Non
         c["finding_id"] == f.id for c in view["candidates"])
 
 
+def _poi_adapter_with_served_page(body: bytes) -> EngineAdapter:
+    """Test-auth adapter whose curl (http_probe) serves ``body`` as the site."""
+
+    settings = Settings(
+        env="test", model_mock=True, allow_test_authorization=True,
+        audit_backend=AuditBackend.MEMORY, eventbus_backend=EventBusBackend.MEMORY,
+        sandbox_backend=SandboxBackend.NOOP,
+    )
+    sb = FakeSandbox()
+    # http_probe drives curl; body then the write-out sentinel line the wrapper parses.
+    sb.set_response("curl", SandboxResult(
+        0, body + b"\n__AEPROBE__HTTP:200 SIZE:%d TIME:0.02" % len(body),
+        b"", 0.02, "fake"))
+    audit = AuditLog(MemoryAuditBackend())
+    engine = Engine(
+        settings, audit=audit, event_bus=InMemoryEventBus(),
+        gateway=ModelGateway(settings=settings, provider=MockProvider(), audit=audit),
+        sandbox=sb, registry=default_registry(),
+    )
+    return EngineAdapter(engine)
+
+
+class _StubPostEx:
+    """Minimal post-ex operator: echoes each command as its output."""
+
+    def run(self, session: Any, command: str) -> Any:
+        from attack_engine.c2.postex import PostExResult
+
+        return PostExResult(action="run", session_id=session.id, host=session.host,
+                            command=command, output=f"out:{command}")
+
+
+def _seed_foothold(adapter: EngineAdapter, external_id: str) -> tuple[str, Any]:
+    eng = adapter.engagement(external_id)
+    eid = engagement_id_for(external_id)
+    sess = eng.session_manager.open_session("10.5.0.12", opened_by="test")
+    finding = Finding(engagement_id=eng.scope.engagement_id, asset="10.5.0.12",
+                      type="command-injection", metadata={"param": "host"})
+    adapter._footholds.setdefault(eid, {})[sess.id] = {
+        "postex": _StubPostEx(), "host": "10.5.0.12", "proof": {"whoami": "www-data"},
+        "technique": "T1190", "finding_id": finding.id, "opened_at": "now",
+    }
+    return sess.id, finding
+
+
+def test_proof_of_impact_captures_loot_and_site_content() -> None:
+    # A fresh foothold auto-runs the bounded loot set AND captures the served
+    # site content — the "here is what we achieved" showcase surfaced in the
+    # console's Footholds & C2 panel.
+    adapter = _poi_adapter_with_served_page(b"<html><h1>OWNED-DEMO</h1></html>")
+    adapter.open_for_testing("poi-1", ["10.5.0.12"])
+    eid = engagement_id_for("poi-1")
+    sid, finding = _seed_foothold(adapter, "poi-1")
+
+    adapter._capture_proof_of_impact("poi-1", sid, finding)
+    view = adapter._session_json(eid, sid)
+
+    # loot auto-ran over the bounded command set (test-auth → post-ex autonomous)
+    assert [row["command"] for row in view["loot"]] == list(adapter._LOOT_COMMANDS)
+    assert view["loot"][0]["output"] == "out:id"
+    # captured site content = the live page served by the compromised host
+    assert view["site_content"]["status"] == 200
+    assert view["site_content"]["url"] == "http://10.5.0.12/"
+    assert "OWNED-DEMO" in view["site_content"]["snippet"]
+
+
+def test_proof_of_impact_skips_loot_without_postex_authorization() -> None:
+    # Fail-safe: on a read-only signed scope (post-ex NOT pre-authorized) the
+    # showcase never blocks on a human gate — it skips loot entirely, while still
+    # capturing the scope-enforced site content.
+    adapter = _poi_adapter_with_served_page(b"<html>read-only</html>")
+    _open_signed(adapter, "poi-2")  # safe-active → post-ex gated, not autonomous
+    eid = engagement_id_for("poi-2")
+    sid, finding = _seed_foothold(adapter, "poi-2")
+
+    adapter._capture_proof_of_impact("poi-2", sid, finding)
+    view = adapter._session_json(eid, sid)
+    assert view["loot"] == []  # no autonomous post-ex → no auto-loot (no gate block)
+    assert view["site_content"]["status"] == 200  # read-only site GET still captured
+
+
 def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "cs-1")
     st = adapter.campaign_status("cs-1")
@@ -379,6 +491,110 @@ def test_run_campaign_completes_and_records(adapter: EngineAdapter) -> None:
     assert outcome.stop_reason
     assert outcome.audit_intact is True
     assert any(r["agent_name"] == "Adversary Campaign" for r in adapter.agent_runs("camp-1"))
+
+
+# distcc on 3632 — a classically-exploitable service nmap's top-1000 default
+# misses, so the exploit feed must scan for it explicitly (pilot fix #1b).
+_DISTCC_NMAP_XML = b"""<?xml version="1.0"?>
+<nmaprun scanner="nmap">
+ <host>
+  <status state="up"/>
+  <address addr="10.5.0.12" addrtype="ipv4"/>
+  <ports>
+   <port protocol="tcp" portid="3632">
+     <state state="open"/>
+     <service name="distccd" product="distccd" version="v1"/>
+   </port>
+  </ports>
+ </host>
+</nmaprun>
+"""
+
+
+def _exploit_adapter() -> EngineAdapter:
+    """Adapter whose sandbox reports distcc open + a Metasploit session opening."""
+
+    settings = Settings(
+        env="test", model_mock=True, audit_backend=AuditBackend.MEMORY,
+        eventbus_backend=EventBusBackend.MEMORY, sandbox_backend=SandboxBackend.NOOP,
+    )
+    sb = FakeSandbox()
+    sb.set_response("nmap", SandboxResult(0, _DISTCC_NMAP_XML, b"", 0.05, "fake"))
+    # The metasploit wrapper invokes msfconsole by full path; the fake sandbox
+    # keys on the executable basename (see logical_tool), so respond to msfconsole.
+    sb.set_response("msfconsole", SandboxResult(
+        0, b"[*] Command shell session 1 opened (10.5.0.99:4444 -> 10.5.0.12:41000)\n",
+        b"", 0.1, "fake"))
+    audit = AuditLog(MemoryAuditBackend())
+    engine = Engine(
+        settings, audit=audit, event_bus=InMemoryEventBus(),
+        gateway=ModelGateway(settings=settings, provider=MockProvider(), audit=audit),
+        sandbox=sb, registry=default_registry(),
+    )
+    return EngineAdapter(engine)
+
+
+def test_network_service_exploit_lands_confirmed_rce_autonomously() -> None:
+    # Pilot #1b: Full Attack's non-web foothold path. An exploit-intensity signed
+    # scope pre-authorizes exploit_confirm (Tier ≥ 1), so the curated port scan
+    # surfaces distcc and the Metasploit module confirms RCE without a human gate.
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "exp-1", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "exploit"},
+        authorized_by="ciso@x", signature="signed-1",
+    )
+    adapter.open(scope)
+    assert scope.roe.read_only is False  # exploitation needs a mutating RoE
+
+    confirmed = adapter._exploit_network_services("exp-1")
+    assert confirmed == 1  # the distcc module opened a session → CONFIRMED
+
+    eng = adapter.engagement("exp-1")
+    # exploit records a VERIFIED rce finding; correlate finalises it to CONFIRMED.
+    eng.correlate()
+    rce = [f for f in eng.store.findings(FindingState.CONFIRMED) if f.type == "rce"]
+    assert len(rce) == 1
+    assert rce[0].metadata.get("confirmed_by") == "metasploit_exploit_v1"
+    # and it is a foothold-capable command-execution finding.
+    assert adapter._is_foothold_capable(rce[0]) or rce[0].type == "rce"
+
+
+def test_network_exploit_gates_without_authorization() -> None:
+    # Fail-safe: a read-only (non-exploit) scope must NOT autonomously exploit —
+    # the mutating Metasploit run is refused, so no RCE is confirmed.
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "exp-2", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="ciso@x", signature="signed-2",
+    )
+    adapter.open(scope)
+    assert scope.roe.read_only is True
+    confirmed = adapter._exploit_network_services("exp-2")
+    assert confirmed == 0
+    eng = adapter.engagement("exp-2")
+    assert [f for f in eng.store.findings(FindingState.CONFIRMED) if f.type == "rce"] == []
+
+
+def test_autolaunch_footholds_skips_without_authorization() -> None:
+    # Pilot #2 guard: the autonomous campaign only lands footholds when the scope
+    # pre-authorizes establish_foothold (Tier ≥ 1). A read-only scope must skip
+    # (never block on a human gate) and open no session.
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "fh-1", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="c", signature="s",
+    )
+    adapter.open(scope)
+    # even with a confirmed foothold-capable finding present, no auth → no session
+    eng = adapter.engagement("fh-1")
+    f = Finding(
+        engagement_id="eng-fh-1", asset="10.5.0.12", type="command-injection",
+        title="cmdi", proposed_by="t", metadata={"param": "host", "method": "GET"},
+    )
+    stored = eng.store.propose_finding(f, emitted_by="t")
+    eng.store.promote_finding(stored.id, FindingState.VERIFIED, verified_by="o", emitted_by="t")
+    eng.store.promote_finding(stored.id, FindingState.CONFIRMED, emitted_by="t")
+    assert adapter._autolaunch_footholds("fh-1") == []
 
 
 def _wait_job(adapter: EngineAdapter, external_id: str, *, timeout: float = 8.0) -> dict:

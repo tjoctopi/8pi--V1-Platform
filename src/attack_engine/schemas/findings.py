@@ -140,13 +140,16 @@ class Finding(StrictModel):
         evidence: tuple[str, ...] = (),
         exploit_prob: float | None = None,
         priority: Priority | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Finding:
         """Return a new Finding advanced to ``new_state``.
 
         Raises ``ValueError`` on an illegal transition. This is the *only*
         sanctioned way to change a finding's state — enforcing rule #1 in code.
         An optional calibrated ``exploit_prob`` / ``priority`` may be attached at
-        promotion time (the Verifier/correlator scoring stages).
+        promotion time (the Verifier/correlator scoring stages), and ``metadata``
+        merges impact/remediation fields onto the finding (existing keys win, so a
+        richer feed-provided value — e.g. a CVE's CVSS — is never clobbered).
         """
 
         if not self.can_transition_to(new_state):
@@ -166,4 +169,6 @@ class Finding(StrictModel):
             data["exploit_prob"] = exploit_prob
         if priority is not None:
             data["priority"] = priority
+        if metadata:
+            data["metadata"] = {**metadata, **(self.metadata or {})}
         return Finding.model_validate(data)

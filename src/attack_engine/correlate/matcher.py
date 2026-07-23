@@ -21,6 +21,7 @@ from ..knowledge.store import KnowledgeStore
 from ..logging import get_logger
 from ..schemas.findings import VULN_TYPE_PREFIXES, Finding, FindingState
 from .feeds import CveFeed, CveRecord
+from .impact import enrich_impact, priority_for_cvss
 from .scoring import ExploitabilityScorer, ExploitFeatures
 
 _log = get_logger("correlate.matcher")
@@ -76,11 +77,20 @@ class ExploitabilityMatcher:
             else finding.reachable
         )
         prob = finding.exploit_prob if finding.exploit_prob is not None else 0.6
-        priority = self._scorer.priority(prob, on_kev=False, reachable=reachable)
+        # Impact + remediation so the finding is actionable (severity/CVSS,
+        # how-to-fix, and why it is reachable) — a confirmed vuln that carries
+        # none of this is a finding a defender cannot triage.
+        impact = enrich_impact(finding, reachable=reachable)
+        cvss = impact.get("cvss")
+        priority = (
+            priority_for_cvss(float(cvss)) if isinstance(cvss, (int, float))
+            else self._scorer.priority(prob, on_kev=False, reachable=reachable)
+        )
         confirmed = self._store.promote_finding(
             finding.id,
             FindingState.CONFIRMED,
             priority=priority,
+            metadata=impact,
             emitted_by="exploitability_matcher",
         )
         self._audit.append(
@@ -137,6 +147,19 @@ class ExploitabilityMatcher:
                 "cwe": cve.cwe,
                 "from_service": service_finding.id,
                 "port": service_finding.metadata.get("port"),
+                "reachability_reason": (
+                    "Reachable from the engagement entry: a route exists in the attack "
+                    "graph to the affected service."
+                    if reachable else
+                    "The affected service is exposed but no external route from the "
+                    "engagement entry node has been confirmed."
+                ),
+                "remediation": (
+                    f"Upgrade {(service_finding.service or 'component').split('/', 1)[0]} "
+                    f"beyond the version affected by {cve.id} and restart the service; "
+                    f"apply the vendor patch and validate configuration."
+                    + (" On CISA KEV — prioritise immediately." if cve.kev else "")
+                ),
             },
         )
         proposed = self._store.propose_finding(cve_finding, emitted_by="exploitability_matcher")

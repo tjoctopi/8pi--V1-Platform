@@ -23,7 +23,7 @@ confirms them. Everything flows through the Tool Runner boundary via
 from __future__ import annotations
 
 from collections.abc import Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from ..knowledge.store import KnowledgeStore
 from ..knowledge.worldmodel import WorldModel
@@ -259,39 +259,102 @@ class WebObserver:
     # --- per-tool ingestion ---------------------------------------------------
 
     def _ingest_endpoints(self, wm: WorldModel, result: ToolResult) -> None:
-        """Katana: each parameterised endpoint → candidates per suspected class."""
+        """Katana: each parameterised endpoint → candidates per suspected class.
+
+        Two injection surfaces are folded in: GET query parameters (``params``)
+        and POST/PUT **form fields** (``form``, surfaced by katana ``-fx -aff``).
+        A form field is exactly where a command-injection point hides — e.g.
+        Mutillidae's dns-lookup ``target_host`` reaches a shell — so each field
+        becomes a candidate whose companion fields + the endpoint's own query
+        ride as the fixed request context the oracle needs to submit the form.
+        """
+
+        endpoints = result.parsed.get("endpoints", [])
+        # A form field that reaches a shell IS the web foothold, so process POST/PUT
+        # forms before GET query params — otherwise a flood of crawled GET endpoints
+        # could exhaust the candidate budget before the cmdi form is ever reached
+        # (a deep crawl surfaces thousands of endpoints; the foothold point is rare).
+        forms = [e for e in endpoints if str(e.get("method") or "GET").upper() in ("POST", "PUT")]
+        others = [e for e in endpoints if e not in forms]
 
         seen = 0
-        for ep in result.parsed.get("endpoints", []):
-            params = ep.get("params") or []
+        for ep in forms:
             url = ep.get("url")
-            if not params or not url:
-                continue
-            loc = _split_url(url)
+            loc = _split_url(url) if url else None
             if loc is None:
                 continue
             scheme, host, port, path = loc
-            for pname in params:
+            method = str(ep.get("method") or "GET").upper()
+            query = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+            form = ep.get("form") or {}
+            for pname in form:
                 if seen >= _CANDIDATE_LIMIT:
                     return
                 seen += 1
-                subject = _injection_point(scheme, host, port, path, pname)
-                for cls in _param_classes(pname):
-                    self._add(
-                        wm,
-                        subject=subject,
-                        kind=cls,
-                        title=f"{cls} candidate at {path}?{pname}",
-                        rationale=(
-                            f"Parameter {pname!r} on a crawled endpoint is a "
-                            f"{cls} injection candidate."
-                        ),
-                        prior=_PRIOR_BY_CLASS.get(cls, 0.3),
-                        probability=0.5,
-                        source="katana",
-                        audit_id=result.audit_id,
-                        suggested_tools=_TOOLS_BY_CLASS.get(cls, ()),
-                    )
+                # Companion fields (everything but the one being injected) plus the
+                # endpoint query are the fixed context the oracle replays so the
+                # form actually submits.
+                data = {k: v for k, v in form.items() if k != pname}
+                context: dict[str, object] = {"method": method}
+                if query:
+                    context["params"] = query
+                if data:
+                    context["data"] = data
+                self._propose_param(
+                    wm, scheme, host, port, path, pname,
+                    source="katana", audit_id=result.audit_id,
+                    surface=f"{method} form", context=context,
+                )
+
+        for ep in others:
+            url = ep.get("url")
+            loc = _split_url(url) if url else None
+            if loc is None:
+                continue
+            scheme, host, port, path = loc
+            for pname in ep.get("params") or []:
+                if seen >= _CANDIDATE_LIMIT:
+                    return
+                seen += 1
+                self._propose_param(
+                    wm, scheme, host, port, path, pname,
+                    source="katana", audit_id=result.audit_id, surface="endpoint",
+                )
+
+    def _propose_param(
+        self,
+        wm: WorldModel,
+        scheme: str,
+        host: str,
+        port: int | None,
+        path: str,
+        pname: str,
+        *,
+        source: str,
+        audit_id: str,
+        surface: str,
+        context: dict[str, object] | None = None,
+    ) -> None:
+        """Raise one candidate hypothesis per suspected class for a parameter."""
+
+        subject = _injection_point(scheme, host, port, path, pname)
+        for cls in _param_classes(pname):
+            self._add(
+                wm,
+                subject=subject,
+                kind=cls,
+                title=f"{cls} candidate at {path}?{pname}",
+                rationale=(
+                    f"Parameter {pname!r} on a crawled {surface} is a "
+                    f"{cls} injection candidate."
+                ),
+                prior=_PRIOR_BY_CLASS.get(cls, 0.3),
+                probability=0.5,
+                source=source,
+                audit_id=audit_id,
+                suggested_tools=_TOOLS_BY_CLASS.get(cls, ()),
+                context=context,
+            )
 
     def _ingest_nuclei(self, wm: WorldModel, result: ToolResult) -> None:
         """Nuclei: a template match is class evidence at its matched-at URL."""
@@ -379,6 +442,7 @@ class WebObserver:
         source: str,
         audit_id: str,
         suggested_tools: tuple[str, ...],
+        context: dict[str, object] | None = None,
     ) -> None:
         """Add a lead, or reinforce an existing one, avoiding duplicates."""
 
@@ -396,6 +460,7 @@ class WebObserver:
             suggested_tools=suggested_tools,
             created_by="web",
             observations=(obs,),
+            context=context,
         )
 
 
@@ -462,6 +527,12 @@ class WebGraduator:
             metadata["port"] = port
         if param is not None:
             metadata["param"] = param
+        # Fold in oracle context the subject URL cannot encode (a POST form's
+        # method + fixed companion fields). This is what lets the oracle submit a
+        # command-injection form rather than only a GET query point.
+        for key in ("method", "params", "data", "base_value"):
+            if key in h.context:
+                metadata[key] = h.context[key]
         return Finding(
             engagement_id=self._store.engagement_id,
             asset=host,

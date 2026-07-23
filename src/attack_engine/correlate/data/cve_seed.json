@@ -1,5 +1,5 @@
 {
-  "_comment": "Minimal offline CVE/KEV seed for the ground-truth range. A real deployment ingests NVD + CISA KEV; tests never hit the network. Version ranges use half-open [introduced, fixed).",
+  "_comment": "Offline CVE/KEV feed for the ground-truth range (no network needed). A real deployment ingests NVD + CISA KEV via cve_nvd_path/cve_kev_path; this bundled feed covers the classically-exploitable services on the red-team range (Metasploitable et al.) so the Vulnerability & Patch Loop correlates offline. Version ranges use half-open [introduced, fixed).",
   "records": [
     {
       "id": "CVE-2021-41773",
@@ -43,6 +43,80 @@
           "product": "mysql",
           "aliases": ["mariadb", "mysql server"],
           "ranges": [{"introduced": "5.1.0", "fixed": "5.5.24"}, {"introduced": "5.5.61", "last_affected": "5.5.61"}]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2011-2523",
+      "description": "vsftpd 2.3.4 backdoor: a ':)' in the username opens a root shell on port 6200.",
+      "cvss": 9.8,
+      "kev": false,
+      "cwe": "CWE-78",
+      "has_public_exploit": true,
+      "affected": [
+        {
+          "product": "vsftpd",
+          "aliases": ["very secure ftp daemon"],
+          "ranges": [{"introduced": "2.3.4", "fixed": "2.3.5"}]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2007-2447",
+      "description": "Samba 3.0.0-3.0.25rc3 'username map script' remote command execution via shell metacharacters in an SMB username.",
+      "cvss": 9.8,
+      "kev": false,
+      "cwe": "CWE-78",
+      "has_public_exploit": true,
+      "affected": [
+        {
+          "product": "samba",
+          "aliases": ["smbd", "samba smbd"],
+          "ranges": [{"introduced": "3.0.0", "fixed": "3.0.25"}]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2017-7494",
+      "description": "Samba 3.5.0-4.6.4 remote code execution via a writable share (SambaCry / is_known_pipename).",
+      "cvss": 9.8,
+      "kev": true,
+      "cwe": "CWE-94",
+      "has_public_exploit": true,
+      "affected": [
+        {
+          "product": "samba",
+          "aliases": ["smbd", "samba smbd"],
+          "ranges": [{"introduced": "3.5.0", "fixed": "4.6.4"}]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2004-2687",
+      "description": "distccd allows remote attackers to execute arbitrary commands via compilation jobs (the daemon enforces no access restriction).",
+      "cvss": 9.8,
+      "kev": false,
+      "cwe": "CWE-78",
+      "has_public_exploit": true,
+      "affected": [
+        {
+          "product": "distccd",
+          "aliases": ["distcc"]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2010-2075",
+      "description": "UnrealIRCd 3.2.8.1 (the Nov 2009-Jun 2010 distributed tarball) contains a backdoor allowing remote command execution.",
+      "cvss": 9.8,
+      "kev": false,
+      "cwe": "CWE-78",
+      "has_public_exploit": true,
+      "affected": [
+        {
+          "product": "unrealircd",
+          "aliases": ["unreal ircd", "unreal"],
+          "ranges": [{"introduced": "3.2.8.1", "fixed": "3.2.8.2"}]
         }
       ]
     }
