@@ -3,7 +3,35 @@
 A running log of current state, decisions, and known gaps. Update this when things
 change so the next session starts with truth, not assumptions.
 
-_Last updated: 2026-07-23_
+_Last updated: 2026-07-24_
+
+## 2026-07-24 — Attack Tree: Threat Map tab becomes a kill-chain breach tree (branch `feat/attack-tree-threat-map`, stacked on `fix/pilot-quick-wins`)
+- **Ask:** the manager wanted the Threat Map to show a proper professional tree of the whole attack
+  path (not the force-graph, not dummy) — customer-worthy, cinematic-but-enterprise.
+- **Replaced** the force-directed asset graph with a hierarchical **Attack Tree** (approved: replace ·
+  kill-chain phases · achieved + potential). Built entirely from real engine data.
+- **Backend** (`api/views.py`): new pure, deterministic `build_attack_tree(assets, findings, *, chains,
+  ad_paths, sessions, world_model)` → `{phases, nodes, edges, summary}`. Phases = origin → recon →
+  initial-access → foothold → post-ex → escalate → lateral → objective. Nodes from reachable assets,
+  CONFIRMED/candidate findings (impact/CVSS/remediation/reachability), live C2 sessions + their
+  proof-of-impact (loot + captured site content as post-ex children), owned principals, AD DA paths,
+  realised chains. `status` (confirmed/reachable/potential) drives solid vs dashed. Readability cap:
+  all confirmed shown, unconfirmed capped at `_MAX_POTENTIAL_NODES=10` + an honest "+N more" node.
+  Adapter `attack_tree()` + `_engine_routes()` helper (shared with `attack_path`); route
+  `GET /engagements/{eid}/attack-tree`. Old `threat-map` endpoint left intact (unused by UI).
+- **Frontend** (`ThreatMapTab.jsx`, full rewrite): deterministic layered SVG tree (Sugiyama-lite
+  barycenter, no new dep). Enterprise motion (subtle, `prefers-reduced-motion`-aware, toggle): grid+
+  vignette, origin pulse, confirmed-path flow, soft glow. **Breach Replay** ▶ walks the chain hop-by-hop
+  with plain-language captions + lineage highlight. HUD node cards (technique/CVSS/status dot),
+  click detail panel (finding impact OR foothold proof-of-impact), summary tiles, Domain-Admin badge.
+- **Verified:** full pytest+ruff+mypy green; eslint clean; `react-scripts build` compiles. LIVE render on
+  the range — real web-foothold flow → tree showed origin → CONFIRMED cmdi (9.8) → live www-data@10.5.0.12
+  foothold → captured Metasploitable2 homepage (post-ex) → objective; summary counts correct. Script:
+  scratchpad/live_tree.py.
+- **Dependency:** surfaces the Pilot proof-of-impact (sessions loot/site_content) + reuses its test
+  helpers → PR is **stacked on #26** (retarget base to dev once #26 merges).
+
+_Prior update: 2026-07-23 (Pilot quick-wins) below._
 
 ## 2026-07-23 — Pilot quick-wins: reach-a-foothold from both surfaces + proof-of-impact showcase (branch `fix/pilot-quick-wins`, off dev)
 - **Scope:** five pilot items + a UX consolidation the user emphasised ("everything about foothold & C2 in

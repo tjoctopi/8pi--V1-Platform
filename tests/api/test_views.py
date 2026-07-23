@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from attack_engine.api.views import (
     build_attack_path,
+    build_attack_tree,
     build_report_summary,
     build_threat_map,
 )
@@ -128,6 +129,103 @@ def test_attack_path_renders_domain_admin_route() -> None:
     route = ap["paths"][0]
     assert route["kind"] == "identity" and route["crown_id"] == "DOMAIN ADMINS"
     assert route["steps"][0]["role"] == "entry" and route["steps"][-1]["role"] == "crown"
+
+
+# ── attack tree (kill-chain hierarchy) ───────────────────────────────────────
+
+def _node(tree: dict, node_id: str) -> dict:
+    return next(n for n in tree["nodes"] if n["id"] == node_id)
+
+
+def test_attack_tree_empty_is_safe() -> None:
+    t = build_attack_tree([], [])
+    assert t["nodes"] == [{**_node(t, "origin")}]  # only the origin root
+    assert t["edges"] == []
+    assert next(p["key"] for p in t["phases"]) == "origin"
+    assert t["summary"]["live_footholds"] == 0
+
+
+def test_attack_tree_builds_full_breach_lineage() -> None:
+    # origin → recon(asset) → initial-access(cmdi) → foothold(session) →
+    # post-ex(loot) → escalate(owned) → objective(DA): the whole breach story.
+    assets = [{"id": "a", "type": "host", "reachable": True, "exposure": "external",
+               "identifiers": {"ip": "10.5.0.12"}}]
+    findings = [{"id": "f1", "asset_id": "10.5.0.12", "type": "command-injection",
+                 "title": "cmdi on target_host", "severity": "crit", "cvss": 9.8,
+                 "exploitability": "confirmed", "status": "confirmed",
+                 "technique_ref": "T1059", "cve_refs": [], "remediation": "no shell",
+                 "reachability_reason": "proven by live probe"}]
+    sessions = [{"id": "s1", "host": "10.5.0.12", "status": "active", "technique": "T1190",
+                 "proof": {"whoami": "www-data", "hostname": "box"},
+                 "loot": [{"command": "id", "output": "uid=33(www-data)"}],
+                 "site_content": {"url": "http://10.5.0.12/", "status": 200,
+                                  "snippet": "Metasploitable2"}, "kind": "shell"}]
+    t = build_attack_tree(
+        assets, findings, sessions=sessions,
+        ad_paths=[{"start": "alice", "target": "Domain Admins", "techniques": ["T1098"]}],
+        world_model={"owned_principals": ["alice"]},
+    )
+    phases = {n["id"]: n["phase"] for n in t["nodes"]}
+    assert phases["asset-10.5.0.12"] == "recon"
+    assert phases["find-f1"] == "initial-access"
+    assert phases["sess-s1"] == "foothold"
+    assert phases["loot-s1"] == "post-ex"
+    assert phases["objective-ad-0"] == "objective"
+
+    # confirmed cmdi is solid; carries impact for the detail panel
+    fnode = _node(t, "find-f1")
+    assert fnode["status"] == "confirmed" and fnode["cvss"] == 9.8
+    assert fnode["detail"]["remediation"] == "no shell"
+
+    # the foothold node carries proof; the loot node carries the captured showcase
+    assert _node(t, "sess-s1")["label"] == "www-data@10.5.0.12"
+    loot = _node(t, "loot-s1")["detail"]
+    assert loot["loot"][0]["command"] == "id"
+    assert loot["site_content"]["snippet"] == "Metasploitable2"
+
+    # lineage edges exist end-to-end, and edges are unique
+    pairs = {(e["source"], e["target"]) for e in t["edges"]}
+    assert len(pairs) == len(t["edges"])  # no duplicates
+    for pair in [("origin", "asset-10.5.0.12"), ("asset-10.5.0.12", "find-f1"),
+                 ("find-f1", "sess-s1"), ("sess-s1", "loot-s1"),
+                 ("own-0", "objective-ad-0")]:
+        assert pair in pairs, pair
+
+    assert t["summary"] == {"entry_points": 1, "confirmed_findings": 1,
+                            "live_footholds": 1, "crown_reached": 1, "domain_admin": True}
+
+
+def test_attack_tree_caps_potential_candidates_with_summary_node() -> None:
+    # A thorough crawl can graduate many low-confidence candidates; the tree stays
+    # readable by capping unconfirmed nodes and folding the rest into one honest
+    # "+N more" node (never silently dropped).
+    assets = [{"id": "a", "type": "webapp", "reachable": True,
+               "identifiers": {"ip": "10.5.0.11"}}]
+    findings = [
+        {"id": f"c{i}", "asset_id": "10.5.0.11", "type": "sqli-boolean-blind",
+         "title": f"candidate {i}", "severity": "med", "exploitability": "reachable",
+         "status": "proposed", "technique_ref": "T1190", "cve_refs": []}
+        for i in range(25)
+    ]
+    t = build_attack_tree(assets, findings)
+    ia = [n for n in t["nodes"] if n["phase"] == "initial-access"]
+    more = [n for n in ia if n["id"] == "find-more"]
+    assert more, "expected a '+N more' summary node"
+    assert "15 more" in more[0]["label"]  # 25 candidates, cap 10, 15 folded
+    assert len([n for n in ia if n["id"] != "find-more"]) == 10
+
+
+def test_attack_tree_marks_unconfirmed_as_potential() -> None:
+    # A reachable-but-unconfirmed finding is dashed (status != confirmed).
+    assets = [{"id": "a", "type": "webapp", "reachable": True,
+               "identifiers": {"ip": "10.5.0.11"}}]
+    findings = [{"id": "f2", "asset_id": "10.5.0.11", "type": "sqli-boolean-blind",
+                 "title": "maybe sqli", "severity": "high", "exploitability": "reachable",
+                 "status": "proposed", "technique_ref": "T1190", "cve_refs": []}]
+    t = build_attack_tree(assets, findings)
+    assert _node(t, "find-f2")["status"] == "reachable"
+    assert t["summary"]["confirmed_findings"] == 0
+    assert t["summary"]["live_footholds"] == 0
 
 
 def test_report_summary_counts() -> None:

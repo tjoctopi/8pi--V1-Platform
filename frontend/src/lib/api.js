@@ -77,6 +77,7 @@ export const api = {
   engagementEventsUrl: (id) => withToken(`${API}/engagements/${id}/events`),
   assets: (id) => http.get(`/engagements/${id}/assets`).then((r) => r.data.assets),
   threatMap: (id) => http.get(`/engagements/${id}/threat-map`).then((r) => r.data),
+  attackTree: (id) => http.get(`/engagements/${id}/attack-tree`).then((r) => r.data),
 
   // vuln loop
   vulnScan: (id) => http.post(`/engagements/${id}/vuln-scan`).then((r) => r.data),
