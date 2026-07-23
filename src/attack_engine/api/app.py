@@ -782,6 +782,13 @@ def create_app() -> FastAPI:
             return {"nodes": [], "edges": [], "risk": [], "layers": []}
         return adapter().threat_map(eid)
 
+    @api.get("/engagements/{eid}/attack-tree")
+    async def attack_tree(eid: str) -> dict[str, Any]:
+        _load(eid)
+        if not adapter().is_open(eid):
+            return {"phases": [], "nodes": [], "edges": [], "summary": {}}
+        return adapter().attack_tree(eid)
+
     @api.get("/engagements/{eid}/attack-path")
     async def attack_path(eid: str) -> dict[str, Any]:
         _load(eid)

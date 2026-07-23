@@ -464,6 +464,31 @@ def test_proof_of_impact_skips_loot_without_postex_authorization() -> None:
     assert view["site_content"]["status"] == 200  # read-only site GET still captured
 
 
+def test_attack_tree_empty_safe_when_closed(adapter: EngineAdapter) -> None:
+    t = adapter.attack_tree("never-opened")
+    assert t == {"phases": [], "nodes": [], "edges": [], "summary": {}}
+
+
+def test_attack_tree_surfaces_live_foothold_with_proof() -> None:
+    # The whole-breach tree carries a live foothold node (from sessions) plus its
+    # proof-of-impact as a post-ex child — the showcase inside the tree.
+    adapter = _poi_adapter_with_served_page(b"<html>OWNED</html>")
+    adapter.open_for_testing("tree-1", ["10.5.0.12"])
+    sid, finding = _seed_foothold(adapter, "tree-1")
+    adapter._capture_proof_of_impact("tree-1", sid, finding)
+
+    t = adapter.attack_tree("tree-1")
+    assert next(p["key"] for p in t["phases"]) == "origin"
+    sess = next(n for n in t["nodes"] if n["kind"] == "session")
+    assert sess["phase"] == "foothold" and sess["host"] == "10.5.0.12"
+    loot = next(n for n in t["nodes"] if n["kind"] == "loot")
+    assert loot["phase"] == "post-ex"
+    assert "OWNED" in loot["detail"]["site_content"]["snippet"]
+    assert t["summary"]["live_footholds"] == 1
+    # a real edge links the foothold to its loot showcase
+    assert {"source": sess["id"], "target": loot["id"], "status": "confirmed"} in t["edges"]
+
+
 def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "cs-1")
     st = adapter.campaign_status("cs-1")

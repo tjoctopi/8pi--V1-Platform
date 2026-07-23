@@ -1772,10 +1772,10 @@ class EngineAdapter:
     def threat_map(self, external_id: str) -> dict[str, Any]:
         return views.build_threat_map(self.assets(external_id), self.findings(external_id))
 
-    def attack_path(self, external_id: str) -> dict[str, Any]:
-        # Feed the REAL engine routes (WebChainer attack chains + AD Domain-Admin
-        # paths) into the view so the console renders the actual chained kill chain,
-        # not just a flat per-finding list.
+    def _engine_routes(self, external_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The REAL engine routes for the path/tree views: WebChainer attack chains
+        + AD Domain-Admin paths, serialized. Empty + safe when closed."""
+
         chains: list[dict[str, Any]] = []
         ad_paths: list[dict[str, Any]] = []
         if self.is_open(external_id):
@@ -1796,9 +1796,40 @@ class EngineAdapter:
                          "techniques": [e.technique for e in p.edges]}
                         for p in wm.domain_admin_paths()
                     ]
+        return chains, ad_paths
+
+    def attack_path(self, external_id: str) -> dict[str, Any]:
+        # Feed the REAL engine routes (WebChainer attack chains + AD Domain-Admin
+        # paths) into the view so the console renders the actual chained kill chain,
+        # not just a flat per-finding list.
+        chains, ad_paths = self._engine_routes(external_id)
         return views.build_attack_path(
             self.assets(external_id), self.findings(external_id),
             chains=chains, ad_paths=ad_paths,
+        )
+
+    def attack_tree(self, external_id: str) -> dict[str, Any]:
+        """The whole attack as a kill-chain tree (the Threat Map view).
+
+        Assembles reachable assets + CONFIRMED/candidate findings + the real engine
+        routes + live C2 sessions (with their proof-of-impact) + the world-model
+        belief state into a hierarchical, phase-layered breach tree. Empty, valid
+        shape when the engagement is closed — never an error.
+        """
+
+        empty: dict[str, Any] = {"phases": [], "nodes": [], "edges": [], "summary": {}}
+        if not self.is_open(external_id):
+            return empty
+        chains, ad_paths = self._engine_routes(external_id)
+        sessions: list[dict[str, Any]] = []
+        with contextlib.suppress(Exception):
+            sessions = self.sessions(external_id).get("sessions", [])
+        world_model: dict[str, Any] = {}
+        with contextlib.suppress(Exception):
+            world_model = self.world_model_view(external_id)
+        return views.build_attack_tree(
+            self.assets(external_id), self.findings(external_id),
+            chains=chains, ad_paths=ad_paths, sessions=sessions, world_model=world_model,
         )
 
     #: The canonical kill-chain the progress bar walks (key, label, what it means).
