@@ -422,15 +422,21 @@ def build_attack_path(
          "target": p["id"], "role": p["role"]}
         for p in points
     ]
+    # Derive the role tallies + id lists from the FINAL point roles (after the
+    # crown-ensure flip) so stats can never disagree with entry_points/crown_jewels
+    # (the running counters could drift from the actual roles otherwise).
+    entry_ids = [p["id"] for p in points if p["role"] == "entry"]
+    pivot_ids = [p["id"] for p in points if p["role"] == "pivot"]
+    crown_ids = [p["id"] for p in points if p["role"] == "crown"]
     return {
         "points": points, "arcs": arcs, "paths": paths, "continents": [],
         "layer_stats": layer_stats,
         "attacker_origin": {"lat": a_lat, "lng": a_lng, "label": "OPS ORIGIN"},
         "geo_arcs": geo_arcs,
-        "entry_points": [p["id"] for p in points if p["role"] == "entry"],
+        "entry_points": entry_ids,
         "crown_jewels": crown_ids,
-        "stats": {"entry": entry, "pivot": max(pivot, 0), "crown": crown,
-                  "paths": len(paths), "chains": len(real_paths)},
+        "stats": {"entry": len(entry_ids), "pivot": len(pivot_ids),
+                  "crown": len(crown_ids), "paths": len(paths), "chains": len(real_paths)},
     }
 
 
