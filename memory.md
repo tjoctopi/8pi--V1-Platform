@@ -8,7 +8,21 @@ _Last updated: 2026-07-23_
 ## 2026-07-23 — Pilot quick-wins: reach-a-foothold from both surfaces + proof-of-impact showcase (branch `fix/pilot-quick-wins`, off dev)
 - **Scope:** five pilot items + a UX consolidation the user emphasised ("everything about foothold & C2 in
   ONE place; on success show what we captured — a showcase to put in front of people"). All **built + green**
-  (full pytest, ruff, mypy clean; 178 src files). **Not yet live-proven on the range; not committed** (awaiting go).
+  (full pytest, ruff, mypy clean; 178 src files). **Committed + PR #26 → dev** (branch `fix/pilot-quick-wins`,
+  furqanali-rgb, no co-author). **Both foothold paths PROVEN LIVE on the range (2026-07-23)** — see below.
+- **LIVE PROOF (real Claude model + real Docker sandbox on the range net, no fakes):**
+  - **#1b network foothold:** `_exploit_network_services` on Metasploitable 10.5.0.12 — curated-port nmap `-sV`
+    found distcc on **3632** (top-1000 misses it) + Samba/SSH; the Metasploit `distcc_exec` module opened a real
+    session → correlate finalised **CONFIRMED rce, priority=patch_immediately**, reachability_reason stamped,
+    `audit.verify()=True`. Script: scratchpad/live_1b_network_foothold.py.
+  - **#1a web foothold + #2 + proof-of-impact:** katana `-fx -aff` autonomously surfaced Mutillidae's dns-lookup
+    **POST form `target_host`** (12 forms among 174 endpoints) → graduated a cmdi finding carrying the POST
+    context (method/params/data) → `CommandInjectionOracle` **CONFIRMED** arbitrary command execution
+    (`command_injection_oracle_v1`, cvss 9.8, patch_immediately) with **zero false positives** (all SQLi/LFI
+    candidates correctly rejected) → `_autolaunch_footholds` opened a live governed session (**www-data@
+    56d5de11048d**) → proof-of-impact showcase captured **loot** (id/whoami/hostname/uname/ip, all real) **and
+    captured site content** = the live Metasploitable2 homepage HTML (HTTP 200, 891 bytes). `audit.verify()=True`.
+    Script: scratchpad/live_1a_web_foothold.py.
 - **#1a POST-form cmdi discovery (autonomous web foothold).** `katana` wrapper now crawls with `-fx -aff`
   (extract + auto-fill HTML forms) and parses the filled POST body into `form` fields; dedup key includes the
   method so a form POST isn't masked by its GET twin. `WebObserver._ingest_endpoints` processes POST/PUT forms
