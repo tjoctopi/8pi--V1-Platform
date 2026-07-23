@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { ShieldWarning, Wrench, ArrowsClockwise, ArrowClockwise } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV, EXPLOIT, STATUS } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, PreviewNotice, useToast, errMsg } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, useToast, errMsg } from "../../components/ui";
 
 function Stat({ label, value, color = "#fff" }) {
   return (
@@ -50,12 +50,6 @@ export default function VulnTab({ eid, reload }) {
       <SectionTitle sub="Version tracking → CVE/KEV correlation → exploitable-by-reachability → remediate → re-test (C-09).">
         Vulnerability &amp; Patch Loop
       </SectionTitle>
-
-      <PreviewNotice>
-        Correlated vulnerabilities are real (engine verify + CVE correlation). The live NVD/KEV
-        cache refresh and the remediate → re-test loop aren't wired to the engine yet — those
-        actions are not available in this build.
-      </PreviewNotice>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Stat label="Correlated Vulns" value={vulns.length} />

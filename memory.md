@@ -3,7 +3,64 @@
 A running log of current state, decisions, and known gaps. Update this when things
 change so the next session starts with truth, not assumptions.
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-07-23_
+
+## 2026-07-23 — Pilot quick-wins: reach-a-foothold from both surfaces + proof-of-impact showcase (branch `fix/pilot-quick-wins`, off dev)
+- **Scope:** five pilot items + a UX consolidation the user emphasised ("everything about foothold & C2 in
+  ONE place; on success show what we captured — a showcase to put in front of people"). All **built + green**
+  (full pytest, ruff, mypy clean; 178 src files). **Committed + PR #26 → dev** (branch `fix/pilot-quick-wins`,
+  furqanali-rgb, no co-author). **Both foothold paths PROVEN LIVE on the range (2026-07-23)** — see below.
+- **LIVE PROOF (real Claude model + real Docker sandbox on the range net, no fakes):**
+  - **#1b network foothold:** `_exploit_network_services` on Metasploitable 10.5.0.12 — curated-port nmap `-sV`
+    found distcc on **3632** (top-1000 misses it) + Samba/SSH; the Metasploit `distcc_exec` module opened a real
+    session → correlate finalised **CONFIRMED rce, priority=patch_immediately**, reachability_reason stamped,
+    `audit.verify()=True`. Script: scratchpad/live_1b_network_foothold.py.
+  - **#1a web foothold + #2 + proof-of-impact:** katana `-fx -aff` autonomously surfaced Mutillidae's dns-lookup
+    **POST form `target_host`** (12 forms among 174 endpoints) → graduated a cmdi finding carrying the POST
+    context (method/params/data) → `CommandInjectionOracle` **CONFIRMED** arbitrary command execution
+    (`command_injection_oracle_v1`, cvss 9.8, patch_immediately) with **zero false positives** (all SQLi/LFI
+    candidates correctly rejected) → `_autolaunch_footholds` opened a live governed session (**www-data@
+    56d5de11048d**) → proof-of-impact showcase captured **loot** (id/whoami/hostname/uname/ip, all real) **and
+    captured site content** = the live Metasploitable2 homepage HTML (HTTP 200, 891 bytes). `audit.verify()=True`.
+    Script: scratchpad/live_1a_web_foothold.py.
+- **#1a POST-form cmdi discovery (autonomous web foothold).** `katana` wrapper now crawls with `-fx -aff`
+  (extract + auto-fill HTML forms) and parses the filled POST body into `form` fields; dedup key includes the
+  method so a form POST isn't masked by its GET twin. `WebObserver._ingest_endpoints` processes POST/PUT forms
+  **before** GET params (the foothold field is rare in a deep crawl), turning each field into a candidate whose
+  `context` carries `method`/`params`/`data` (the fixed request the oracle replays). New `Hypothesis.context`
+  (rides alongside the round-trippable `subject`); `WebGraduator` folds it into finding metadata so the cmdi
+  oracle submits the form. This is what lets Mutillidae's dns-lookup `target_host` be reached autonomously.
+- **#1b network-service exploit foothold (nmap→msf→session).** `adapter._scan_exploit_ports` nmaps a curated
+  set of classically-exploitable ports (distcc 3632, samba, vsftpd, ircd, … — nmap top-1000 misses several,
+  masscan may be absent) → proposes `exposed-service` findings; `adapter._exploit_network_services` runs the
+  real gated exploit path (→ VERIFIED rce → correlate → CONFIRMED), autonomous ONLY when the signed scope
+  pre-authorizes `exploit_confirm` (Tier ≥ 1), else skips (never blocks an unattended run on a gate). Wired into
+  `run_campaign`.
+- **#2 campaign lands live footholds (not just draws chains).** `adapter._autolaunch_footholds` opens a real
+  governed C2 session on each CONFIRMED command-exec finding (bounded, one/host), autonomous only when the scope
+  pre-authorizes `establish_foothold`. Wired after compose_chains in `run_campaign`; session count in the outcome.
+- **#3 confirmed findings carry impact.** New `correlate/impact.py`: deterministic CVSS v3.1 base + class-specific
+  remediation keyed by vuln class (no model needed — pilot box is network-restricted) + `reachability_reason`
+  (cites the live probe when `verified_by` is set, else the attack-graph route). `ExploitabilityMatcher` enriches
+  every confirmed finding and derives priority from CVSS. `Finding.promote`/`store.promote_finding` gained a
+  `metadata` merge (existing keys win, so a CVE's feed CVSS is never clobbered).
+- **#4 offline CVE/KEV feed + Vuln Loop wiring + banner drop.** Expanded `correlate/data/cve_seed.json` from 3 to
+  8 records covering the range's exploitable services (vsftpd CVE-2011-2523, Samba usermap CVE-2007-2447 +
+  SambaCry CVE-2017-7494/KEV, distcc CVE-2004-2687, UnrealIRCd CVE-2010-2075) — correlates offline, interval-
+  matched (no FP on patched versions). `serialize._source` routes matcher-confirmed vulns (carry
+  `reachability_reason`+CVSS/CVE) to the console's `vuln-loop` lane. Removed the "not wired yet" `PreviewNotice`
+  from `VulnTab`.
+- **Proof-of-impact showcase (the UX ask).** `adapter.establish_foothold` now calls `_capture_proof_of_impact`:
+  auto-runs a bounded loot set (`id/whoami/hostname/uname -a/ip addr`) over the governed PostEx **only when
+  post-ex is pre-authorized** (never blocks on a gate), and captures the served site content via a scope-enforced
+  `http_probe` GET (`_capture_site_content`, body read from the raw audited result → snippet, truncated). Surfaced
+  on the session JSON as `loot` + `site_content`. Console `ConsoleTab` "Footholds & C2" is now the single
+  showcase: a "Breach achieved" kill-stripe banner (whoami@host) + per-session "Proof of impact — what we
+  achieved" block (loot command log + captured site content pane). Console-side only; no impersonation.
+- **Tests added:** katana form parse, observer/graduator POST-form context, matcher impact enrichment (CVSS/
+  severity/remediation/reachability), CVE feed offline correlation + no-FP + KEV, network-exploit autonomous vs
+  gated, autolaunch gating, proof-of-impact loot+site capture + the post-ex-gated skip path.
+- **Note on `data/audit.db`:** ~260 MB working-tree DB (gitignored) — do not commit.
 
 ## 2026-07-20 — Console now drives the REAL autonomous engine (branch `feat/console-autonomous-pipeline` off dev)
 - **Problem the user hit:** the pipeline lands a CONFIRMED foothold end-to-end via the scratchpad

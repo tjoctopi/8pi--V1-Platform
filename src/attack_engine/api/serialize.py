@@ -17,7 +17,14 @@ import ipaddress
 from typing import Any
 
 from ..governance.audit import AuditEntry
-from ..schemas.findings import Asset, Finding, FindingState, Priority, Service
+from ..schemas.findings import (
+    VULN_TYPE_PREFIXES,
+    Asset,
+    Finding,
+    FindingState,
+    Priority,
+    Service,
+)
 
 # ── finding vocabulary reconciliation ────────────────────────────────────────
 
@@ -50,6 +57,28 @@ def _technique_for(finding_type: str) -> str | None:
         return technique_for_finding_type(finding_type) or None
     except Exception:  # pragma: no cover - catalog is optional to serialization
         return None
+
+
+def _source(f: Finding) -> str | None:
+    """Which console lane surfaced the finding.
+
+    A finding the Exploitability Matcher produced — a CVE match or an
+    oracle-proven vulnerability finalised with impact/remediation — belongs to
+    the console's *Vulnerability & Patch Loop* (the version → CVE/KEV →
+    exploitable-by-reachability → remediate → re-test view). We recognise those
+    by the correlation output they carry (a ``reachability_reason`` and either a
+    CVSS or a CVE type), which the matcher stamps on every finding it confirms.
+    Everything else keeps its raw emitter for the Findings detail view.
+    """
+
+    meta = f.metadata or {}
+    ftype = (f.type or "").lower()
+    is_correlated_vuln = (
+        ftype.startswith("cve-") or ftype.startswith(VULN_TYPE_PREFIXES)
+    ) and bool(meta.get("reachability_reason") or meta.get("cvss"))
+    if is_correlated_vuln:
+        return "vuln-loop"
+    return f.proposed_by or meta.get("source")
 
 
 def _exploitability(f: Finding) -> str:
@@ -96,7 +125,7 @@ def finding_to_json(f: Finding) -> dict[str, Any]:
         "kev": bool(f.on_kev),
         "technique_ref": _technique_for(f.type),
         "reachability_reason": meta.get("reachability_reason"),
-        "source": f.proposed_by or meta.get("source"),
+        "source": _source(f),
         "product": meta.get("product"),
         "vulnerable_version": meta.get("vulnerable_version"),
         "patched_version": meta.get("patched_version"),

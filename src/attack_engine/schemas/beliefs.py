@@ -73,6 +73,13 @@ class Hypothesis(StrictModel):
     #: Never executed from here; the Tool Runner boundary still governs any run.
     suggested_tools: tuple[str, ...] = Field(default_factory=tuple)
 
+    #: Oracle metadata that the round-trippable :attr:`subject` URL cannot encode
+    #: — e.g. a POST form's request method plus the fixed companion fields
+    #: (``method``/``params``/``data``) an injection needs to submit. The subject
+    #: stays the dedup key; this rides alongside and is merged into the graduated
+    #: Finding's metadata. Empty for the common GET-query injection point.
+    context: dict[str, object] = Field(default_factory=dict)
+
     created_by: str = "ideator"
     #: Set once the hypothesis graduates into a Finding (its truth now lives there).
     finding_id: str | None = None

@@ -89,6 +89,58 @@ def test_observer_katana_endpoints_become_candidates() -> None:
     assert "sqli" in by_kind  # and every param is a SQLi candidate
 
 
+def test_observer_post_form_becomes_cmdi_candidate_with_request_context() -> None:
+    # A crawled POST form (katana -fx -aff): the injectable field becomes a cmdi
+    # candidate carrying the request context (method + companion fields + query)
+    # the oracle needs to submit the form — the fix that lets Full Attack reach a
+    # command-execution foothold behind a POST form.
+    wm = WorldModel("eng-1")
+    _observe(
+        wm, "katana", "10.5.0.12",
+        {"endpoints": [{
+            "url": "http://10.5.0.12/mutillidae/index.php?page=dns-lookup.php",
+            "path": "/mutillidae/index.php", "params": ["page"], "method": "POST",
+            "form": {"target_host": "katana", "dns-lookup-php-submit-button": "Lookup DNS"},
+        }]},
+    )
+    # target_host smells like command injection; its candidate carries the
+    # companion field (the submit button) + endpoint query as fixed context.
+    cmdi = next(h for h in wm.open_hypotheses()
+                if h.kind == "cmdi" and h.subject.endswith("?target_host"))
+    ctx = cmdi.context
+    assert ctx["method"] == "POST"
+    assert ctx["params"] == {"page": "dns-lookup.php"}  # the endpoint query rides along
+    assert ctx["data"] == {"dns-lookup-php-submit-button": "Lookup DNS"}  # companion field
+
+
+def test_graduator_carries_post_form_context_into_finding() -> None:
+    # The POST context survives graduation, so the command-injection oracle
+    # submits the form (method=POST → inject into `data`) rather than a GET query.
+    store = KnowledgeStore("eng-1")
+    wm = WorldModel("eng-1", store=store)
+    _observe(
+        wm, "katana", "10.5.0.12",
+        {"endpoints": [{
+            "url": "http://10.5.0.12/mutillidae/index.php?page=dns-lookup.php",
+            "path": "/mutillidae/index.php", "params": ["page"], "method": "POST",
+            "form": {"target_host": "katana", "dns-lookup-php-submit-button": "Lookup DNS"},
+        }]},
+    )
+    # Bump the cmdi lead over the graduation floor (a crawl candidate starts low).
+    cmdi = next(h for h in wm.open_hypotheses() if h.kind == "cmdi")
+    from attack_engine.schemas.beliefs import Observation
+    wm.observe(cmdi.id, Observation(source="nuclei", probability=0.8))
+
+    graduated = WebGraduator(store).graduate(wm, min_confidence=0.5)
+    f = next(g for g in graduated if g.type == "command-injection")
+    assert f.metadata["param"] == "target_host"
+    assert f.metadata["method"] == "POST"
+    assert f.metadata["params"] == {"page": "dns-lookup.php"}
+    assert f.metadata["data"] == {"dns-lookup-php-submit-button": "Lookup DNS"}
+    # ...and it routes to the command-injection oracle.
+    assert default_oracle_registry().for_finding(f) is not None
+
+
 def test_observer_dalfox_reflected_is_strong_xss() -> None:
     wm = WorldModel("eng-1")
     _observe(

@@ -540,6 +540,155 @@ class EngineAdapter:
         self._emit(eid, "sweep.graduated", {"count": len(graduated)})
         return len(graduated)
 
+    #: High-signal ports the network-exploit path scans explicitly. nmap's
+    #: top-1000 default misses several classically-exploitable services (distcc
+    #: 3632, r-services, ingreslock, drb…) and masscan may be unavailable, so the
+    #: exploitation feed scans this curated set to reliably surface a foothold
+    #: service. These are the ports behind the ``metasploit`` exploit catalog plus
+    #: the well-known vulnerable services on a red-team range.
+    _EXPLOIT_SCAN_PORTS = (
+        "21,22,23,25,111,139,445,512,513,514,1099,1524,2049,3306,3632,"
+        "5432,5900,6000,6667,6697,8009,8180,8787,50000"
+    )
+
+    def _scan_exploit_ports(self, external_id: str) -> int:
+        """nmap the curated exploitable-service ports and ingest exposed services.
+
+        Reliable, self-contained service discovery for the exploitation feed — does
+        not slow the general recon default. Returns the number of open services
+        folded onto the target assets (as PROPOSED ``exposed-service`` findings the
+        Metasploit module can match). Every scan is scope-enforced + audited.
+        """
+
+        from ..schemas.findings import Asset, Finding, Priority, Service
+        from ..schemas.tools import ToolProfile
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        targets = self._scope_targets(external_id)
+        found = 0
+        for target in targets:
+            profile = ToolProfile(preset="default", args={"ports": self._EXPLOIT_SCAN_PORTS})
+            try:
+                result = eng.tool_runner.run("nmap", target, profile)
+            except Exception as exc:  # out-of-scope / degraded — skip this target
+                self._emit(eid, "exploit.scan_error",
+                           {"target": target, "detail": f"{type(exc).__name__}: {exc}"})
+                continue
+            open_ports = result.parsed.get("ports", [])
+            if not open_ports:
+                continue
+            services = tuple(
+                Service(port=int(p["port"]), protocol=p.get("protocol", "tcp"),
+                        name=p.get("service"), product=p.get("product"),
+                        version=p.get("version"))
+                for p in open_ports
+            )
+            with contextlib.suppress(Exception):
+                eng.store.add_asset(
+                    Asset(address=target, services=services,
+                          engagement_id=eng.scope.engagement_id),
+                    emitted_by="exploit.scan",
+                )
+            for svc in services:
+                finding = Finding(
+                    engagement_id=eng.scope.engagement_id, asset=target,
+                    service=svc.cpe_hint, type=f"exposed-service:{svc.port}/{svc.protocol}",
+                    title=f"Exposed {svc.name or 'service'} on {target}:{svc.port}",
+                    priority=Priority.INFORMATIONAL, evidence=(f"raw:{result.audit_id}",),
+                    proposed_by="exploit.scan",
+                    metadata={"port": svc.port, "product": svc.product, "version": svc.version},
+                )
+                with contextlib.suppress(Exception):
+                    eng.store.propose_finding(finding, emitted_by="exploit.scan")
+                    found += 1
+        self._emit(eid, "exploit.scan", {"services": found})
+        return found
+
+    def _exploit_network_services(self, external_id: str) -> int:
+        """Real, gated exploitation of recon'd network services — the *non-web*
+        foothold path (nmap vuln service → Metasploit module → live session →
+        CONFIRMED RCE), complementing the web cmdi→C2 path so Full Attack reaches a
+        foothold from either surface.
+
+        Runs the confirmation-grade exploit modules over any PROPOSED exposed-
+        service/CVE finding they handle. First scans the curated exploitable-service
+        ports (:meth:`_scan_exploit_ports`) so a foothold service on a non-standard
+        port (e.g. distcc 3632) is actually found — the default recon's top-1000
+        misses these and masscan may be unavailable. Fully governed: the
+        ``exploit_confirm`` gate decides autonomous (signed scope, Tier ≥ 1) vs
+        human, every run is scope-enforced + audited, and it degrades on its own.
+        Returns confirmations.
+        """
+
+        from ..governance.authorization import AuthorizationDecision, AuthorizationPolicy
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        # Only drive REAL exploitation autonomously when the signed scope
+        # pre-authorizes exploit_confirm (Tier ≥ 1). Otherwise skip — an
+        # unattended campaign must never block on a human gate, and exploitation
+        # off the authorization allowlist is the operator's explicit call (from
+        # the console, where the approvals UI resolves the gate). Fail-safe.
+        if AuthorizationPolicy(eng.scope).decide("exploit_confirm") is not (
+            AuthorizationDecision.AUTONOMOUS
+        ):
+            self._emit(eid, "exploit.skipped",
+                       {"reason": "exploit_confirm not pre-authorized (gate required)"})
+            return 0
+        with contextlib.suppress(Exception):
+            self._scan_exploit_ports(external_id)
+        try:
+            report = eng.exploit()
+        except AttackEngineError as exc:  # gate not wired / RoE — degrade, don't sink
+            self._emit(eid, "exploit.degraded",
+                       {"detail": f"{type(exc).__name__}: {exc}"})
+            return 0
+        self._emit(eid, "exploit.done", {
+            "confirmed": report.confirmed, "disproven": report.disproven,
+            "gate_denied": report.gate_denied,
+        })
+        return report.confirmed
+
+    def _autolaunch_footholds(self, external_id: str, *, limit: int = 3) -> list[str]:
+        """Execute the composed chains: land live C2 footholds on confirmed points.
+
+        The autonomous half of "compose chains → *reach* a foothold" (pilot #2). Once
+        the sweep/exploit have produced CONFIRMED command-execution findings, open a
+        real governed session on each (bounded by ``limit``, one per host) so Full
+        Attack actually establishes the foothold instead of only composing the route
+        to it. Only runs when the signed scope pre-authorizes ``establish_foothold``
+        (Tier ≥ 1) — it never blocks an unattended campaign on a human gate. Returns
+        the ids of the sessions opened.
+        """
+
+        from ..governance.authorization import AuthorizationDecision, AuthorizationPolicy
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        if AuthorizationPolicy(eng.scope).decide("establish_foothold") is not (
+            AuthorizationDecision.AUTONOMOUS
+        ):
+            self._emit(eid, "foothold.skipped",
+                       {"reason": "establish_foothold not pre-authorized (gate required)"})
+            return []
+        opened: list[str] = []
+        seated = {c.get("host") for c in self._footholds.get(eid, {}).values()}
+        for f in eng.store.findings(FindingState.CONFIRMED):
+            if len(opened) >= limit:
+                break
+            if not self._is_foothold_capable(f) or f.asset in seated:
+                continue
+            try:
+                session = self.establish_foothold(external_id, f.id, actor="campaign")
+            except AttackEngineError:
+                continue  # gate/liveness failed — try the next candidate
+            if session:
+                opened.append(session["id"])
+                seated.add(f.asset)
+        self._emit(eid, "foothold.autolaunched", {"sessions": opened})
+        return opened
+
     def _run_web_loop(self, external_id: str, *, max_steps: int = 14) -> Any:
         """Drive the REAL Web specialist reasoning loop over the engagement.
 
@@ -657,6 +806,11 @@ class EngineAdapter:
         }
         self._emit(eid, "c2.foothold", {"session": sess.id, "host": finding.asset,
                                         "whoami": foothold.proof.get("whoami", "?")})
+        # Proof-of-impact showcase: auto-run bounded loot over the fresh session
+        # and capture the served site content — the concrete "here is what we
+        # achieved" evidence surfaced in the console's Footholds & C2 panel.
+        with contextlib.suppress(Exception):
+            self._capture_proof_of_impact(external_id, sess.id, finding)
         self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": "Foothold", "role": "offensive", "status": "completed",
@@ -669,6 +823,83 @@ class EngineAdapter:
         })
         return self._session_json(eid, sess.id)
 
+    #: Bounded, benign loot commands auto-run on a fresh foothold to demonstrate
+    #: the access we proved — identity + host + reachability. Read-only; reveals
+    #: only the host's own identity, never target data. This is the auto-run
+    #: half of the proof-of-impact showcase.
+    _LOOT_COMMANDS: tuple[str, ...] = (
+        "id", "whoami", "hostname", "uname -a",
+        "ip -o addr 2>/dev/null || ifconfig -a 2>/dev/null",
+    )
+
+    def _capture_proof_of_impact(self, external_id: str, session_id: str,
+                                 finding: Any) -> None:
+        """Auto-run loot + capture served site content on a fresh foothold.
+
+        The concrete "here is what we achieved" evidence for the console: a
+        bounded loot command log run over the governed post-ex operator, plus the
+        live site content served by the compromised host. Loot only runs when
+        post-exploitation is pre-authorized (Tier ≥ 1) so the showcase never
+        blocks on a human gate; site capture is a scope-enforced, audited HTTP
+        GET. Best-effort — a foothold with no web surface simply carries loot
+        only, and the whole capture degrades without disturbing the session.
+        """
+
+        from ..governance.authorization import AuthorizationDecision, AuthorizationPolicy
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        ctx = self._footholds.get(eid, {}).get(session_id)
+        if ctx is None:
+            return
+        sess = eng.session_manager.get(session_id)
+        loot: list[dict[str, str]] = []
+        if sess is not None and AuthorizationPolicy(eng.scope).decide(
+            "post_exploitation", "T1059"
+        ) is AuthorizationDecision.AUTONOMOUS:
+            for cmd in self._LOOT_COMMANDS:
+                try:
+                    result = ctx["postex"].run(sess, cmd)
+                except Exception:
+                    continue
+                if result is not None:
+                    loot.append({"command": result.command,
+                                 "output": (result.output or "").strip()})
+        ctx["loot"] = loot
+        with contextlib.suppress(Exception):
+            content = self._capture_site_content(eng, finding.asset)
+            if content is not None:
+                ctx["site_content"] = content
+        self._emit(eid, "c2.loot", {"session": session_id, "commands": len(loot),
+                                    "site": bool(ctx.get("site_content"))})
+
+    def _capture_site_content(self, eng: Any, host: str) -> dict[str, Any] | None:
+        """Fetch the served homepage of the compromised host (captured evidence).
+
+        A real HTTP GET through the scope-enforcing, audited Tool Runner — the
+        "stuff of the site" the operator shows the client. The body is
+        operator-facing evidence (read from the raw audited result, not surfaced
+        to any model), truncated so this stays proof, not bulk retrieval.
+        """
+
+        from ..schemas.tools import ToolProfile
+        from ..toolrunner.wrappers.http_probe import HttpProbeWrapper
+
+        profile = ToolProfile(preset="default",
+                              args={"scheme": "http", "path": "/", "max_bytes": 16384})
+        result = eng.tool_runner.run("http_probe", host, profile)
+        text = HttpProbeWrapper.body_of(result.raw).decode("utf-8", "replace")
+        snippet = text[:2000]
+        if not snippet.strip() and not result.parsed.get("status"):
+            return None  # nothing served — pure network foothold, loot only
+        return {
+            "url": f"http://{host}/",
+            "status": result.parsed.get("status"),
+            "bytes": result.parsed.get("size"),
+            "snippet": snippet,
+            "truncated": len(text) > len(snippet),
+        }
+
     def _session_json(self, eid: str, session_id: str) -> dict[str, Any]:
         eng = self._manager.get(eid, self._service)
         sess = eng.session_manager.get(session_id)
@@ -679,6 +910,8 @@ class EngineAdapter:
             "status": (sess.status.value if sess else "closed"),
             "technique": ctx.get("technique", "T1190"),
             "proof": ctx.get("proof", {}),
+            "loot": ctx.get("loot", []),
+            "site_content": ctx.get("site_content"),
             "finding_id": ctx.get("finding_id"),
             "opened_at": ctx.get("opened_at"),
             "kind": (sess.kind.value if sess else "shell"),
@@ -882,6 +1115,12 @@ class EngineAdapter:
             web = self._web_targets_or_recon(external_id)
             if web:
                 self._deterministic_web_sweep(external_id, web)
+        # Real network-service exploitation: turn any recon'd exposed service that
+        # maps to a known exploit (vsftpd/distcc/samba/…) into a CONFIRMED RCE
+        # foothold — the non-web half of "reach a foothold". Governed by the
+        # exploit_confirm gate (autonomous only on a signed Tier ≥ 1 scope).
+        with contextlib.suppress(Exception):
+            self._exploit_network_services(external_id)
         # Promote graduated findings: the specialists graduate PROPOSED findings;
         # the deterministic oracles + correlator turn them into CONFIRMED (rule #1).
         with contextlib.suppress(AttackEngineError):
@@ -889,6 +1128,14 @@ class EngineAdapter:
         with contextlib.suppress(AttackEngineError):
             eng.correlate()
         self._compose_chains(eng)
+        # Execute the composed chains, don't just draw them (pilot #2): land live
+        # C2 footholds on the CONFIRMED command-execution points the sweep/exploit
+        # produced. This is the step that turns "composes chains but reaches no
+        # foothold" into a real breach — governed, autonomous only on a signed
+        # Tier ≥ 1 scope, and never blocking the run on a gate.
+        sessions: list[str] = []
+        with contextlib.suppress(Exception):
+            sessions = self._autolaunch_footholds(external_id)
         self._persist_run(eid, {
             "id": f"run-{len(self._runs.get(eid, [])) + 1}",
             "agent_name": "Adversary Campaign", "role": "offensive",
@@ -898,6 +1145,7 @@ class EngineAdapter:
                 f"goal_reached={outcome.goal_reached} · rounds={outcome.rounds} · "
                 f"stop={outcome.stop_reason} · {outcome.reachable_hosts} hosts · "
                 f"{len(outcome.owned_frontier)} principals owned · "
+                f"{len(sessions)} footholds · "
                 f"{outcome.autonomous_actions} autonomous / {outcome.gated_actions} gated"
             ),
             "steps": [
@@ -909,7 +1157,7 @@ class EngineAdapter:
         })
         self._emit(eid, "campaign.finished",
                    {"goal_reached": outcome.goal_reached, "rounds": outcome.rounds,
-                    "stop_reason": outcome.stop_reason})
+                    "stop_reason": outcome.stop_reason, "footholds": len(sessions)})
         return outcome
 
     def run_agent(self, external_id: str, agent_id: str) -> dict[str, Any]:

@@ -99,6 +99,24 @@ def test_attack_path_renders_engine_chains_as_multihop_routes() -> None:
     assert route["steps"][0]["exploitability"] == "confirmed"
 
 
+def test_attack_path_stats_match_entry_and_crown_lists() -> None:
+    # regression: stats tallies must equal the id lists they summarise (no drift
+    # from the crown-ensure flip) — stats.entry === len(entry_points), etc.
+    assets = [
+        {"id": "a1", "type": "webapp", "reachable": True, "exposure": "external",
+         "identifiers": {"ip": "10.5.0.12"}},
+        {"id": "a2", "type": "host", "reachable": True, "exposure": "internal",
+         "identifiers": {"ip": "10.5.0.20"}},
+    ]
+    findings = [
+        {"id": "f1", "asset_id": "10.5.0.12", "severity": "high", "exploitability": "confirmed"},
+        {"id": "f2", "asset_id": "10.5.0.20", "severity": "low", "exploitability": "unconfirmed"},
+    ]
+    ap = build_attack_path(assets, findings)
+    assert ap["stats"]["entry"] == len(ap["entry_points"])
+    assert ap["stats"]["crown"] == len(ap["crown_jewels"])
+
+
 def test_attack_path_renders_domain_admin_route() -> None:
     ap = build_attack_path(
         [{"id": "dc", "type": "host", "identifiers": {"ip": "10.5.0.20"}}],

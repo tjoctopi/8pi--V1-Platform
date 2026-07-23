@@ -98,9 +98,13 @@ def test_exhausts_retries_and_raises(settings: Settings) -> None:
 
 
 def test_falls_back_to_mock_without_api_key() -> None:
-    # model_mock False, but no key → provider must be the mock, not litellm.
-    # _env_file=None keeps this hermetic even when a real .env with a key exists.
-    s = Settings(model_mock=False, fireworks_api_key=None, _env_file=None)
+    # model_mock False, but NO provider key of any kind → provider must be the mock,
+    # not litellm. Null every key the gateway checks (fireworks + anthropic) and keep
+    # the default non-bedrock tiers, so this is hermetic even when the shell/.env has
+    # a real ANTHROPIC_API_KEY exported (which pydantic-settings would otherwise read).
+    s = Settings(
+        model_mock=False, fireworks_api_key=None, anthropic_api_key=None, _env_file=None
+    )
     gw = ModelGateway(settings=s)
     assert gw.provider_name == "mock"
 

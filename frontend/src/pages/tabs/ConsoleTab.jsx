@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   MagnifyingGlass, ShieldWarning, Robot, CaretDown, CaretRight, Check, X as XIcon,
-  Gavel, Warning, Lightning, Crosshair, Terminal, Skull,
+  Gavel, Warning, Lightning, Crosshair, Terminal, Skull, Package, Globe,
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { STATUS, INTENSITY, timeAgo } from "../../lib/theme";
@@ -46,7 +46,7 @@ function SessionCard({ s, canWrite, onCommand, onTeardown, busy }) {
             onClick={() => onTeardown(s.id)} data-testid={`teardown-${s.id}`}>Teardown</Btn>
         )}
       </div>
-      {/* proof of impact */}
+      {/* proof of impact — identity headline */}
       {s.proof && Object.keys(s.proof).length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
           {Object.entries(s.proof).map(([k, v]) => (
@@ -55,6 +55,48 @@ function SessionCard({ s, canWrite, onCommand, onTeardown, busy }) {
               <div className="mono text-[11px] text-volt truncate">{v}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* proof of impact — what we captured (loot + live site content) */}
+      {((s.loot && s.loot.length > 0) || s.site_content) && (
+        <div className="mb-3 border border-incident/40 bg-black/40 rounded-sm">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5">
+            <Skull size={13} className="text-incident" weight="fill" />
+            <span className="label text-incident text-[10px]">Proof of impact — what we achieved on {s.host}</span>
+          </div>
+          <div className="p-3 space-y-3">
+            {s.loot && s.loot.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Package size={12} className="text-volt" />
+                  <span className="label text-[9px] text-sub">Auto-run loot ({s.loot.length})</span>
+                </div>
+                <div className="bg-black border border-line divide-y divide-white/5">
+                  {s.loot.map((l, i) => (
+                    <div key={i} className="px-2 py-1.5" data-testid={`loot-${s.id}-${i}`}>
+                      <div className="mono text-[10px] text-volt">$ {l.command}</div>
+                      <div className="mono text-[11px] text-sub whitespace-pre-wrap break-all">{l.output || "(no output)"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {s.site_content && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Globe size={12} className="text-volt" />
+                  <span className="label text-[9px] text-sub">Captured site content</span>
+                  <a href={s.site_content.url} target="_blank" rel="noreferrer"
+                    className="mono text-[10px] text-muted hover:text-volt truncate">{s.site_content.url}</a>
+                  {s.site_content.status != null && <Badge color="#B4B4B4">HTTP {s.site_content.status}</Badge>}
+                </div>
+                <pre className="bg-black border border-line p-2 text-[10px] mono text-sub max-h-48 overflow-auto whitespace-pre-wrap break-all" data-testid={`site-content-${s.id}`}>
+                  {s.site_content.snippet || "(empty response)"}{s.site_content.truncated ? "\n…(truncated)" : ""}
+                </pre>
+              </div>
+            )}
+          </div>
         </div>
       )}
       {/* post-ex command runner */}
@@ -199,6 +241,7 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
 
   const pending = approvals.filter((a) => a.status === "pending");
   const authorized = agents.filter((a) => a.promotion_state === "authorized");
+  const liveSessions = (c2.sessions || []).filter((s) => s.status !== "closed");
 
   if (!agents) return <Loading />;
 
@@ -257,11 +300,25 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
         )}
       </Panel>
 
-      {/* offensive C2 — footholds & live sessions */}
+      {/* offensive C2 — footholds & live sessions (the single foothold/C2 + proof showcase) */}
       <div>
-        <SectionTitle sub="Confirmed command-execution findings can be turned into a live, governed C2 session (scope-checked, human-gated, audited, kill-switchable). Run bounded post-ex over the session and tear it down.">
+        <SectionTitle sub="The one place for footholds & C2: turn a confirmed command-execution finding into a live, governed session (scope-checked, human-gated, audited, kill-switchable), then see exactly what we captured — auto-run loot and the live site content — the proof you put in front of the client."
+          right={liveSessions.length > 0 ? <Badge color="#FF2A2A" dot>{liveSessions.length} LIVE</Badge> : null}>
           Footholds & C2
         </SectionTitle>
+        {liveSessions.length > 0 && (
+          <div className="kill-stripe p-0.5 rounded-sm mb-3">
+            <div className="bg-panel2 px-4 py-3 flex items-center gap-3 flex-wrap" data-testid="breach-banner">
+              <Skull size={20} className="text-incident" weight="fill" />
+              <span className="text-sm text-white font-semibold">
+                Breach achieved — {liveSessions.length} live foothold{liveSessions.length > 1 ? "s" : ""}
+              </span>
+              <span className="mono text-[11px] text-sub">
+                {liveSessions.map((s) => `${s.proof?.whoami || "shell"}@${s.host}`).join("  ·  ")}
+              </span>
+            </div>
+          </div>
+        )}
         {(c2.candidates?.length > 0) && (
           <div className="space-y-2 mb-3">
             {c2.candidates.map((f) => (

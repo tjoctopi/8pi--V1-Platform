@@ -112,3 +112,50 @@ class TestMatcher:
             service="Apache httpd/2.4.49", type="exposed-service:80/tcp"))
         report = ExploitabilityMatcher(feed, store, audit).run()
         assert report.services_scanned == 0
+
+
+class TestImpactEnrichment:
+    """#3 — a confirmed finding must carry impact (CVSS/severity), how-to-fix
+    (remediation), and why-it-is-reachable so a defender can triage it."""
+
+    def _verified_vuln(self, store: KnowledgeStore, address: str, ftype: str,
+                       reachable: bool) -> Finding:
+        store.add_asset(
+            Asset(address=address, engagement_id="engagement-range"),
+            reachable_from_entry=reachable,
+        )
+        f = store.propose_finding(Finding(
+            engagement_id="engagement-range", asset=address, type=ftype,
+            metadata={"param": "cmd"}))
+        return store.promote_finding(f.id, FindingState.VERIFIED, verified_by="cmdi_exec_oracle_v1")
+
+    def test_oracle_vuln_confirmed_with_cvss_severity_remediation(self, feed, store, audit) -> None:
+        self._verified_vuln(store, "10.5.0.12", "command-injection", reachable=True)
+        ExploitabilityMatcher(feed, store, audit).run()
+        confirmed = store.findings(FindingState.CONFIRMED)
+        cmdi = [f for f in confirmed if f.type == "command-injection"]
+        assert cmdi, "oracle-proven cmdi must be confirmed"
+        meta = cmdi[0].metadata
+        assert meta["cvss"] == 9.8
+        assert meta["severity"] == "patch_immediately"
+        assert "shell" in meta["remediation"].lower()
+        assert cmdi[0].priority is Priority.PATCH_IMMEDIATELY
+
+    def test_proven_finding_reachability_reason_cites_the_probe(self, feed, store, audit) -> None:
+        self._verified_vuln(store, "10.5.0.12", "sqli", reachable=True)
+        ExploitabilityMatcher(feed, store, audit).run()
+        sqli = [f for f in store.findings(FindingState.CONFIRMED) if f.type == "sqli"]
+        assert sqli
+        # verified_by is set → the reason must attest a live probe proved it.
+        assert "oracle confirmed" in sqli[0].metadata["reachability_reason"].lower()
+
+    def test_cve_finding_carries_remediation_and_reachability(self, feed, store, audit) -> None:
+        _verified_service(store, "10.5.0.10", "Apache httpd/2.4.49", 80, reachable=True)
+        ExploitabilityMatcher(feed, store, audit).run()
+        cves = [f for f in store.findings(FindingState.CONFIRMED)
+                if f.type.startswith("CVE-2021-417")]
+        assert cves
+        top = max(cves, key=lambda f: f.exploit_prob or 0)
+        assert "upgrade" in top.metadata["remediation"].lower()
+        assert top.metadata["reachability_reason"]
+        assert "KEV" in top.metadata["remediation"]  # on-KEV note appended
