@@ -63,8 +63,15 @@ const CATALOG = {
     name: "Information Exposure / Misconfiguration",
     what: "The server reveals information it shouldn't — an exposed service, directory, version, or file — that helps an attacker plan the next step.",
     loophole: "A service/endpoint is reachable and discloses details (software versions, directory listings, an exposed admin panel or .git directory) without needing authentication.",
-    impact: "On its own it's low severity, but it maps the attack surface and often chains into a more serious weakness.",
+    impact: "Its own severity depends on what is exposed; it maps the attack surface for an attacker and frequently chains into a more serious weakness.",
     fix: "Remove or lock down exposed services/directories, suppress version banners, require auth on admin/management endpoints, and review the external surface.",
+  },
+  k8s: {
+    name: "Exposed Kubernetes / Container Control Plane",
+    what: "A container-orchestration control-plane component (Kubernetes API server, kubelet, or etcd) is reachable over the network.",
+    loophole: "A control-plane port (6443 API server, 10250 kubelet, 2379 etcd) answers on the network. If authentication is weak or anonymous access is enabled, an attacker can enumerate or control the cluster; even when hardened, the exposure hands an attacker reconnaissance it should never have.",
+    impact: "Ranges from cluster reconnaissance to full takeover — scheduling workloads, reading every secret, and pivoting to all nodes and pods.",
+    fix: "Restrict control-plane ports to a trusted network or VPN only, disable anonymous auth, enforce RBAC, and rotate credentials. Never expose 6443 / 10250 / 2379 to untrusted networks.",
   },
   generic: {
     name: "Web Application Weakness",
@@ -84,6 +91,7 @@ function classify(finding) {
   if (/command inj|cmd inj|\brce\b|remote code|os command|t1059/.test(t)) return "cmdi";
   if (/\bssrf\b|request forgery|t1190.*ssrf/.test(t)) return "ssrf";
   if (/auth.?bypass|access control|idor|broken access|unauthor|t1078/.test(t)) return "authbypass";
+  if (/kubernetes|\bk8s\b|control plane|kubelet|\betcd\b|container orchestrat|docker daemon|docker socket|kube-/.test(t)) return "k8s";
   if (/expos|disclosure|misconfig|directory listing|version|banner|open port|\.git/.test(t)) return "exposure";
   return "generic";
 }
@@ -102,12 +110,38 @@ export function explainFinding(finding) {
   };
 }
 
-/** True if a finding is a real, reportable weakness (not engine-discarded noise). */
-export function isReal(finding) {
-  return finding.status !== "false-positive" && finding.exploitability !== "unconfirmed";
+/**
+ * A finding the engine ACTIVELY DISPROVED (state REJECTED -> serialized as
+ * status "false-positive"). This is the only "false positive" — an unconfirmed
+ * finding is unproven, NOT disproved, and must never be labelled discarded.
+ */
+export function isFalsePositive(finding) {
+  return finding.status === "false-positive";
 }
 
-/** True if this is a confirmed weakness (highest confidence). */
+/** Engine-CONFIRMED: proven by a deterministic verification oracle (highest confidence). */
 export function isConfirmed(finding) {
   return finding.exploitability === "confirmed";
+}
+
+/**
+ * Reportable to a client. Not a proven false-positive, AND either the engine
+ * confirmed/reached it OR it is high-impact enough to warrant attention while
+ * still unconfirmed (e.g. an exposed control plane). Low-severity unconfirmed
+ * candidates stay out of the default view but remain visible under "All".
+ *
+ * Rationale (engine model PROPOSED -> VERIFIED -> CONFIRMED/REJECTED): only
+ * REJECTED is a false positive. "unconfirmed" is unproven, not false — so we
+ * surface the serious ones instead of hiding a genuine HIGH (e.g. a recognized
+ * but not-yet-exploited Kubernetes control-plane exposure).
+ */
+export function isReal(finding) {
+  if (isFalsePositive(finding)) return false;
+  if (finding.exploitability === "confirmed" || finding.exploitability === "reachable") return true;
+  return finding.severity === "crit" || finding.severity === "high";
+}
+
+/** Unproven but not disproved — still being tested. Excluded from the default view. */
+export function isUnconfirmedCandidate(finding) {
+  return !isFalsePositive(finding) && !isReal(finding);
 }

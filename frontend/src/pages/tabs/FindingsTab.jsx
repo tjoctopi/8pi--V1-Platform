@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { Bug, Wrench, ArrowsClockwise, ShieldCheck, Warning, Target, ArrowRight, Info } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
-import { SEV, EXPLOIT, STATUS, timeAgo } from "../../lib/theme";
-import { explainFinding, isReal, isConfirmed } from "../../lib/vulnExplain";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, KV, useToast, errMsg } from "../../components/ui";
+import { SEV, EXPLOIT, STATUS } from "../../lib/theme";
+import { explainFinding, isReal, isConfirmed, isUnconfirmedCandidate, isFalsePositive } from "../../lib/vulnExplain";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, Modal, useToast, errMsg } from "../../components/ui";
 
 // short "where" from a finding (endpoint/target), for the client brief
 const whereOf = (f) => {
@@ -14,7 +14,8 @@ const whereOf = (f) => {
 function ExecSummary({ real, all }) {
   const bySev = real.reduce((a, f) => ((a[f.severity] = (a[f.severity] || 0) + 1), a), {});
   const confirmed = real.filter(isConfirmed).length;
-  const hidden = all.length - real.length;
+  const unconfirmed = all.filter(isUnconfirmedCandidate).length;
+  const discarded = all.filter(isFalsePositive).length;
   const top = [...real].sort((a, b) => sevRank(b.severity) - sevRank(a.severity))[0];
   const topBrief = top ? explainFinding(top) : null;
   return (
@@ -22,21 +23,23 @@ function ExecSummary({ real, all }) {
       <div className="flex items-center gap-2 mb-2"><Target size={16} className="text-volt" weight="fill" />
         <span className="h-font text-lg uppercase tracking-tight text-white">Executive Summary</span></div>
       {real.length === 0 ? (
-        <p className="text-sm text-sub">No confirmed weaknesses were proven in this engagement. The engine tested and
-          {" "}<b className="text-white">discarded {hidden} unverified candidate{hidden === 1 ? "" : "s"}</b> as false positives.
-          Run <b className="text-white">Full Attack</b> or a Vuln Scan from the Console to probe deeper.</p>
+        <p className="text-sm text-sub leading-relaxed">No reportable weaknesses in this engagement yet.
+          {unconfirmed > 0 && <> The engine has <b className="text-white">{unconfirmed} candidate{unconfirmed === 1 ? "" : "s"} still being tested</b> (unproven — not yet confirmed).</>}
+          {discarded > 0 && <> {discarded} candidate{discarded === 1 ? " was" : "s were"} tested and <b className="text-white">discarded as false positive{discarded === 1 ? "" : "s"}</b>.</>}
+          {" "}Run <b className="text-white">Full Attack</b> or a Vuln Scan from the Console to probe deeper.</p>
       ) : (
         <>
           <p className="text-sm text-sub leading-relaxed">
-            This engagement confirmed <b className="text-white">{real.length} real weakness{real.length === 1 ? "" : "es"}</b>
+            This engagement found <b className="text-white">{real.length} reportable weakness{real.length === 1 ? "" : "es"}</b>
             {confirmed > 0 && <> (<span className="text-incident font-semibold">{confirmed} exploit-confirmed</span>)</>}.
             {topBrief && <> The most serious is a <b className="text-white">{topBrief.name}</b> at <span className="mono text-sub">{whereOf(top)}</span> — {topBrief.what.toLowerCase()}</>}
           </p>
-          <div className="flex flex-wrap gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3 items-center">
             {["crit", "high", "med", "low", "info"].filter((s) => bySev[s]).map((s) => (
               <Badge key={s} color={SEV[s]?.color}>{bySev[s]} {SEV[s]?.label}</Badge>
             ))}
-            {hidden > 0 && <span className="text-[11px] text-muted mono self-center">· {hidden} false-positive{hidden === 1 ? "" : "s"} auto-discarded</span>}
+            {unconfirmed > 0 && <span className="text-[11px] text-muted mono self-center">· {unconfirmed} unconfirmed candidate{unconfirmed === 1 ? "" : "s"}</span>}
+            {discarded > 0 && <span className="text-[11px] text-muted mono self-center">· {discarded} false-positive{discarded === 1 ? "" : "s"} auto-discarded</span>}
           </div>
         </>
       )}
@@ -47,9 +50,9 @@ function ExecSummary({ real, all }) {
 function NextStep({ real }) {
   const hasCmdExec = real.some((f) => isConfirmed(f) && /command|cmd|\brce\b|remote code|t1059/i.test(`${f.title} ${f.technique_ref}`));
   let msg, tone = "#00E5FF";
-  if (real.length === 0) msg = "No confirmed weaknesses yet — run Full Attack / Vuln Scan from the Console to go deeper.";
+  if (real.length === 0) msg = "No reportable weaknesses yet — run Full Attack / Vuln Scan from the Console to go deeper.";
   else if (hasCmdExec) { msg = "A confirmed command-execution weakness was found — open a live foothold from the Console tab, then generate the client report."; tone = "#FF2A2A"; }
-  else msg = "Review the confirmed weaknesses below (click any row for a client-ready brief), then open the Report tab to hand the client a fix-list.";
+  else msg = "Review the weaknesses below (click any row for a client-ready brief), then open the Report tab to hand the client a fix-list.";
   return (
     <div className="flex items-start gap-2.5 border px-4 py-2.5 mb-5 rounded-sm" style={{ borderColor: `${tone}55`, background: `${tone}0f` }} data-testid="next-step">
       <ArrowRight size={15} style={{ color: tone }} weight="bold" className="mt-0.5 shrink-0" />
@@ -97,7 +100,7 @@ export default function FindingsTab({ eid, reload }) {
 
   return (
     <div>
-      <SectionTitle sub="Confirmed weaknesses, in plain language — what it is, why it's exploitable, and how to fix it."
+      <SectionTitle sub="Weaknesses in plain language — what each one is, why it's exploitable, and how to fix it."
         right={
           <div className="flex gap-1" data-testid="finding-views">
             {views.map((v) => (
@@ -167,6 +170,14 @@ export default function FindingsTab({ eid, reload }) {
                 <div key={e.invocation_id || `${e.type}-${i}`} className="mono text-[11px] text-sub bg-black border border-line px-3 py-1.5 rounded-sm mb-1 break-all">{e.type}: {e.detail}</div>
               )) : <div className="text-xs text-muted">Confirmed by the engine's verification oracle (no raw artifact attached).</div>}
             </div>
+
+            {((sel.cve_refs || []).length > 0 || sel.reachability_reason || sel.source) && (
+              <div className="mt-4 pt-3 border-t border-line/60 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted mono" data-testid="finding-tech-refs">
+                {(sel.cve_refs || []).length > 0 && <span>CVE: {(sel.cve_refs || []).join(", ")}</span>}
+                {sel.reachability_reason && <span>Reachability: {sel.reachability_reason}</span>}
+                {sel.source && <span>Source: {sel.source}</span>}
+              </div>
+            )}
 
             {(sel.status === "open" || sel.status === "retest" || sel.status === "remediating" || sel.status === "closed") && (
               <div className="flex justify-end gap-2 mt-5">
