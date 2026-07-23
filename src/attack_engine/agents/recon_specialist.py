@@ -23,7 +23,7 @@ from ..knowledge.worldmodel import WorldModel
 from ..logging import get_logger
 from ..schemas.agentspec import ModelTier
 from ..schemas.beliefs import Observation
-from ..schemas.findings import Asset, Service
+from ..schemas.findings import Asset, Finding, Priority, Service
 from ..schemas.tools import ToolResult
 from .actions import ActionOutcome, ProposedAction
 from .context import AgentContext
@@ -33,11 +33,17 @@ from .tool_actor import ToolRunnerActor
 _log = get_logger("agent.recon")
 
 #: Recon tools this specialist may reach for (must map to real wrappers).
-DEFAULT_RECON_TOOLS: tuple[str, ...] = ("nmap", "masscan", "httpx", "ffuf")
+DEFAULT_RECON_TOOLS: tuple[str, ...] = ("nmap", "masscan", "httpx", "ffuf", "kube_hunter")
 
 #: Ports we treat as web surface worth enumerating.
 _WEB_PORTS: dict[int, str] = {80: "http", 8080: "http", 8000: "http", 3000: "http",
                               443: "https", 8443: "https"}
+
+#: Kubernetes control-plane ports — an exposed one is a high-value pivot into a
+#: container cluster, so a hit routes to the kube_hunter probe.
+_K8S_PORTS: dict[int, str] = {6443: "kubernetes-api", 8443: "kubernetes-api",
+                              10250: "kubelet", 10255: "kubelet-readonly",
+                              2379: "etcd"}
 
 #: Path fragments that smell like something an attacker wants (raises a lead's prior).
 _SENSITIVE_PATHS = ("admin", "login", "config", "backup", ".git", "api", "upload", "debug")
@@ -51,6 +57,11 @@ RECON_SYSTEM_PROMPT = (
     "observe — you never exploit, and you never claim a weakness is real; you "
     "raise it as a lead for the confirmation oracles. Propose the ranked next "
     "actions as tool calls against in-scope targets.\n\n"
+    "Modern targets frequently run container orchestration. For each in-scope "
+    "host, also run 'kube_hunter' (target = the bare host) to detect an exposed "
+    "Kubernetes control plane — the API server (:6443), kubelet (:10250) or etcd "
+    "(:2379). These high ports are missed by a default port scan, so probe for "
+    "them explicitly; an exposed k8s plane is a high-value lead.\n\n"
     "IMPORTANT tool-call format: the 'target' MUST be a bare host or IP (e.g. "
     "'10.5.0.12') — scope is validated on the host/IP, so a full URL is refused. "
     "For a web probe, keep the bare host as target and put the scheme/port in "
@@ -76,6 +87,8 @@ class ReconObserver:
             self._ingest_http(wm, result)
         elif action.tool == "ffuf":
             self._ingest_paths(wm, result)
+        elif action.tool == "kube_hunter":
+            self._ingest_k8s(wm, result)
 
     # --- per-tool ingestion ---------------------------------------------------
 
@@ -132,6 +145,21 @@ class ReconObserver:
                 audit_id=audit_id,
                 suggested_tools=("httpx", "ffuf", "katana"),
             )
+        # A Kubernetes control-plane port is a pivot into the cluster — probe it.
+        k8s = _K8S_PORTS.get(svc.port)
+        if k8s is not None:
+            self._add(
+                wm,
+                subject=address,
+                kind="kubernetes",
+                title=f"{k8s} on {address}:{svc.port} — probe for Kubernetes exposure",
+                rationale="An exposed Kubernetes API/kubelet is a high-value pivot into the cluster.",
+                prior=0.5,
+                probability=0.6,
+                source="nmap",
+                audit_id=audit_id,
+                suggested_tools=("kube_hunter",),
+            )
 
     def _ingest_http(self, wm: WorldModel, result: ToolResult) -> None:
         for hit in result.parsed.get("results", []):
@@ -175,6 +203,110 @@ class ReconObserver:
                 suggested_tools=("katana", "dalfox"),
             )
 
+    def _ingest_k8s(self, wm: WorldModel, result: ToolResult) -> None:
+        """Fold a kube-hunter result into an exposure finding + a k8s lead.
+
+        Recognising the cluster is itself the deliverable: a reachable API server
+        / kubelet is proposed as a HIGH exposure finding, and each concrete
+        kube-hunter weakness becomes its own finding. Confirmation (anonymous
+        access, RCE) stays with the oracles — we only propose.
+        """
+
+        if wm.store is None:
+            return
+        p = result.parsed
+        host = p.get("host") or result.target
+        services = p.get("services") or []
+        nodes = p.get("nodes") or []
+        vulns = p.get("vulnerabilities") or []
+        if not (services or nodes):
+            return  # kube-hunter reached nothing k8s-shaped
+
+        svc_desc = ", ".join(
+            f"{s.get('service')} ({s.get('location')})" for s in services
+        ) or "Kubernetes control-plane services"
+        node_desc = ", ".join(str(n.get("type", "Node")) for n in nodes) or "Kubernetes node"
+
+        wm.store.propose_finding(
+            Finding(
+                engagement_id=wm.engagement_id,
+                asset=host,
+                service="kubernetes",
+                type="k8s-control-plane-exposed",
+                title="Kubernetes control plane exposed to the network",
+                description=(
+                    f"kube-hunter identified an exposed Kubernetes control plane on "
+                    f"{host} ({node_desc}). Reachable services: {svc_desc}. The API "
+                    "server and/or kubelet answer from outside the cluster network, "
+                    "which enlarges the attack surface — a kubelet/API misconfiguration "
+                    "or a leaked credential here can lead to full cluster takeover."
+                ),
+                priority=Priority.HIGH,
+                exploit_prob=0.4,
+                evidence=(result.audit_id,),
+                proposed_by="kube_hunter",
+                metadata={
+                    "source": "kube_hunter",
+                    "k8s_nodes": nodes,
+                    "k8s_services": services,
+                    "remediation": (
+                        "Do not expose the Kubernetes API (6443) or kubelet (10250) to "
+                        "untrusted networks. Restrict them to the control plane and "
+                        "trusted CIDRs with network policy / security groups, keep "
+                        "kubelet anonymous auth disabled (--anonymous-auth=false) with "
+                        "RBAC/Node authorization, and place the API server behind a "
+                        "bastion or VPN rather than a public endpoint."
+                    ),
+                },
+            ),
+            emitted_by="recon",
+        )
+
+        for v in vulns:
+            vid = str(v.get("vid") or v.get("category") or "issue").lower()
+            wm.store.propose_finding(
+                Finding(
+                    engagement_id=wm.engagement_id,
+                    asset=host,
+                    service="kubernetes",
+                    type=f"k8s-{vid}",
+                    title=v.get("vulnerability") or v.get("category") or "Kubernetes weakness",
+                    description=v.get("description") or "",
+                    priority=self._k8s_priority(v.get("severity")),
+                    exploit_prob=0.5,
+                    evidence=(result.audit_id,),
+                    proposed_by="kube_hunter",
+                    metadata={
+                        "source": "kube_hunter",
+                        "hunter": v.get("hunter"),
+                        "k8s_evidence": v.get("evidence"),
+                        "avd_reference": v.get("avd_reference"),
+                    },
+                ),
+                emitted_by="recon",
+            )
+
+        self._add(
+            wm,
+            subject=host,
+            kind="kubernetes",
+            title=f"Kubernetes control plane on {host} ({svc_desc})",
+            rationale="An exposed k8s API/kubelet is a high-value pivot into the cluster.",
+            prior=0.6,
+            probability=0.7,
+            source="kube_hunter",
+            audit_id=result.audit_id,
+            suggested_tools=("kube_hunter",),
+        )
+
+    @staticmethod
+    def _k8s_priority(severity: Any) -> Priority:
+        return {
+            "high": Priority.HIGH,
+            "medium": Priority.MEDIUM,
+            "low": Priority.LOW,
+        }.get(str(severity).lower(), Priority.MEDIUM)
+
     # --- helper ---------------------------------------------------------------
 
     @staticmethod
@@ -210,6 +342,53 @@ class ReconObserver:
         )
 
 
+def _bare_host(target: str) -> str:
+    """Normalise an asset address to a bare host/IP for a host-scoped probe."""
+
+    t = target.strip()
+    if "://" in t:
+        t = t.split("://", 1)[1]
+    t = t.split("/", 1)[0]  # drop path or CIDR suffix
+    if t.count(":") == 1:  # host:port (leave IPv6 literals alone)
+        t = t.split(":", 1)[0]
+    return t
+
+
+def _recon_seed_actions(wm: WorldModel) -> list[ProposedAction]:
+    """Deterministic infra probes run at recon start: kube_hunter per in-scope host.
+
+    A default port scan misses the Kubernetes control-plane ports (:6443/:10250/
+    :2379) and the LLM planner may converge before probing them, so we always run
+    the container-orchestration probe once per host. Skipped for a host that
+    already has a ``kubernetes`` lead, so it does not re-run every round.
+    """
+
+    if wm.store is None:
+        return []
+    actions: list[ProposedAction] = []
+    seen: set[str] = set()
+    for asset in wm.store.assets():
+        host = _bare_host(asset.address)
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        if wm.find_hypothesis(kind="kubernetes", subject=host) is not None:
+            continue
+        actions.append(
+            ProposedAction(
+                tool="kube_hunter",
+                target=host,
+                params={},
+                rationale=(
+                    "Infra recon: probe for an exposed Kubernetes control plane "
+                    "(API/kubelet/etcd ports a default scan misses)."
+                ),
+                expected_value=0.6,
+            )
+        )
+    return actions
+
+
 def build_recon_loop(
     ctx: AgentContext,
     *,
@@ -239,4 +418,5 @@ def build_recon_loop(
         ToolRunnerActor(ctx.tool_runner),
         ReconObserver(),
         max_steps=max_steps,
+        seed_actions=_recon_seed_actions,
     )

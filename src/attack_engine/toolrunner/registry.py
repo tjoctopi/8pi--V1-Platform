@@ -58,6 +58,7 @@ def default_registry() -> ToolRegistry:
     from .wrappers.httpx import HttpxWrapper
     from .wrappers.katana import KatanaWrapper
     from .wrappers.kerberoast import KerberoastWrapper
+    from .wrappers.kube_hunter import KubeHunterWrapper
     from .wrappers.licensed import BurpEnterpriseWrapper, NessusWrapper
     from .wrappers.masscan import MasscanWrapper
     from .wrappers.metasploit import MetasploitCheckWrapper
@@ -77,6 +78,8 @@ def default_registry() -> ToolRegistry:
     reg.register(SubfinderWrapper())
     reg.register(AmassWrapper())
     reg.register(SearchsploitWrapper())
+    # Container orchestration recon (read-only): recognise an exposed k8s plane.
+    reg.register(KubeHunterWrapper())
     # Web (read-only probes).
     reg.register(NucleiWrapper())
     reg.register(NiktoWrapper())

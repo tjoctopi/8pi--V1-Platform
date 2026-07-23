@@ -122,12 +122,19 @@ class ReasoningLoop:
         *,
         max_steps: int = 20,
         max_per_tool: int = 3,
+        seed_actions: Callable[[WorldModel], Sequence[ProposedAction]] | None = None,
     ) -> None:
         self._planner = planner
         self._actor = actor
         self._observer = observer
         self._reflector = reflector or HeuristicReflector()
         self._max_steps = max_steps
+        #: Deterministic actions run once at the start of every ``run`` — before
+        #: the LLM loop — so a probe the planner should not have to "think of"
+        #: (e.g. a container-orchestration scan) always fires, even when the
+        #: objective is already satisfied. They flow through the same
+        #: Actor/Observer path (scope-checked, audited, ingested) as planned ones.
+        self._seed_actions = seed_actions
         #: Cap on successful runs of any single tool, so the loop diversifies across
         #: the tool set rather than fixating on one scanner.
         self._max_per_tool = max_per_tool
@@ -157,6 +164,45 @@ class ReasoningLoop:
         # fixating on one broad scanner (e.g. re-running nuclei with tweaked params
         # for many steps) and forces it to move through the rest of the tool set.
         tool_runs: dict[str, int] = {}
+
+        # Deterministic priming (before the LLM loop, so it always runs — even if
+        # the objective is already satisfied at step 0). Each seed action goes
+        # through the same Actor/Observer path as a planned one.
+        if self._seed_actions is not None:
+            try:
+                seeds = list(self._seed_actions(world_model))
+            except Exception as exc:  # priming must never crash the phase
+                _log.warning("seed actions failed; skipping", error=str(exc))
+                seeds = []
+            for action in seeds:
+                sig = self._sig(action)
+                if sig in done:
+                    continue
+                ctx = LoopContext(
+                    world_model, objective, tuple(result.steps), len(result.steps), budget
+                )
+                outcome = self._actor.act(action)
+                if outcome.ok:
+                    done.add(sig)
+                    tool_runs[action.tool] = tool_runs.get(action.tool, 0) + 1
+                self._observer.observe(action, outcome, ctx)
+                result.steps.append(
+                    ReasoningStep(
+                        index=len(result.steps),
+                        action=action,
+                        ok=outcome.ok,
+                        outcome_summary=outcome.summary,
+                        decision=StepDecision.CONTINUE,
+                    )
+                )
+                _log.info(
+                    "reasoning seed step",
+                    tool=action.tool,
+                    target=action.target,
+                    ok=outcome.ok,
+                    summary=(outcome.summary or "")[:160],
+                )
+
         for step in range(self._max_steps):
             if stop_when is not None and stop_when(world_model):
                 result.stop_reason = "objective_satisfied"
