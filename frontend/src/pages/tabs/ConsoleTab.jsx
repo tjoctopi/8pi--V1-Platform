@@ -416,9 +416,16 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
                     {a.action.technique && <div className="text-[11px] mono text-muted mt-1">{a.action.technique.framework} · {a.action.technique.id} {a.action.technique.name}</div>}
                   </div>
                   <div className="flex gap-2">
-                    <Btn variant="success" icon={Check} disabled={!canApprove || busy}
+                    {/* Gate only on this row's own in-flight state — NOT the global
+                        `busy`. The action awaiting approval (e.g. a foothold parked
+                        at this gate) keeps `busy` truthy, so a `|| busy` guard here
+                        deadlocks: you could never approve the very gate blocking the
+                        job. */}
+                    <Btn variant="success" icon={Check} loading={busy === "ap" + a.id}
+                      disabled={!canApprove || busy === "ap" + a.id}
                       onClick={() => act("ap" + a.id, () => api.approve(a.id), "Action approved & executed")} data-testid={`approve-${a.id}`}>Approve</Btn>
-                    <Btn variant="danger" icon={XIcon} disabled={!canApprove || busy}
+                    <Btn variant="danger" icon={XIcon} loading={busy === "dn" + a.id}
+                      disabled={!canApprove || busy === "dn" + a.id}
                       onClick={() => act("dn" + a.id, () => api.deny(a.id, "denied by approver"), "Action denied")} data-testid={`deny-${a.id}`}>Deny</Btn>
                   </div>
                 </div>
