@@ -12,7 +12,7 @@ const whereOf = (f) => {
 };
 
 function ExecSummary({ real, all }) {
-  const bySev = real.reduce((a, f) => ((a[f.severity] = (a[f.severity] || 0) + 1), a), {});
+  const bySev = real.reduce((a, f) => { a[f.severity] = (a[f.severity] || 0) + 1; return a; }, {});
   const confirmed = real.filter(isConfirmed).length;
   const unconfirmed = all.filter(isUnconfirmedCandidate).length;
   const discarded = all.filter(isFalsePositive).length;

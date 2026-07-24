@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { FileHtml, FilePdf, Code, ShieldCheck } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, KV, PreviewNotice } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, KV } from "../../components/ui";
 
 function Stat({ label, value, color = "#fff" }) {
   return (
@@ -34,11 +34,6 @@ export default function ReportTab({ eid }) {
         }>
         Engagement Report
       </SectionTitle>
-
-      <PreviewNotice>
-        The live summary, severity breakdown and findings below are real. HTML / PDF export
-        isn't wired to the engine yet — those buttons are not available in this build (use JSON).
-      </PreviewNotice>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Stat label="Assets" value={s.assets} />

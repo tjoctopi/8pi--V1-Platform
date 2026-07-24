@@ -929,8 +929,19 @@ def create_app() -> FastAPI:
                   "findings_closed": 0, "agent_runs": 0, "audit_events": 0,
                   "audit_chain_valid": True}
         )
+        # Breach evidence — the proof-of-compromise section a client report leads
+        # with: how far the attack got + the live footholds it landed (with their
+        # captured proof-of-impact). Best-effort; empty when nothing was breached.
+        breach: dict[str, Any] = {}
+        footholds: list[dict[str, Any]] = []
+        if adapter().is_open(eid):
+            with contextlib.suppress(Exception):
+                breach = adapter().attack_tree(eid).get("summary", {})
+            with contextlib.suppress(Exception):
+                footholds = adapter().sessions(eid).get("sessions", [])
         return {"generated_at": now_iso(), "engagement": _list_item(doc),
-                "roe": doc["roe"], "summary": summary, "findings": findings}
+                "roe": doc["roe"], "summary": summary, "findings": findings,
+                "breach": breach, "footholds": footholds}
 
     @api.get("/engagements/{eid}/report")
     async def report(eid: str) -> dict[str, Any]:
