@@ -6,7 +6,21 @@ import {
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
 import { SEV } from "../../lib/theme";
-import { Panel, SectionTitle, Btn, Badge, Loading, Empty } from "../../components/ui";
+import { Panel, SectionTitle, Btn, Badge, Loading, Empty, ErrorBoundary } from "../../components/ui";
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// classy rounded-elbow connector between a parent's bottom-centre and a child's
+// top-centre; straightens when nearly vertical, shrinks the corner radius on
+// tight runs so it never self-overlaps.
+function edgePath(sx, y1, tx, y2) {
+  const my = (y1 + y2) / 2;
+  if (Math.abs(tx - sx) < 2) return `M ${sx} ${y1} L ${tx} ${y2}`;
+  const dir = tx > sx ? 1 : -1;
+  const r = Math.max(0, Math.min(9, Math.abs(tx - sx) / 2, Math.abs(y2 - y1) / 3));
+  return `M ${sx} ${y1} L ${sx} ${my - r} Q ${sx} ${my} ${sx + r * dir} ${my} `
+    + `L ${tx - r * dir} ${my} Q ${tx} ${my} ${tx} ${my + r} L ${tx} ${y2}`;
+}
 
 /* ─── layout constants ─────────────────────────────────────────────────────── */
 const NODE_W = 176;
@@ -103,13 +117,15 @@ function NodeCard({ n, x, y, selected, active, dimmed, onClick, onHover }) {
       data-testid={`tree-node-${n.id}`}>
       {/* incident glow */}
       {(solid && (n.kind === "session" || n.phase === "objective" || n.severity === "crit")) && (
-        <rect x={-3} y={-3} width={NODE_W + 6} height={NODE_H + 6} rx={9}
-          fill="none" stroke={color} strokeWidth={2} opacity={active ? 0.9 : 0.5}
+        <rect x={-3} y={-3} width={NODE_W + 6} height={NODE_H + 6} rx={11}
+          fill="none" stroke={color} strokeWidth={1.5} opacity={active ? 0.9 : 0.45}
           className="ae-glow" />
       )}
-      <rect width={NODE_W} height={NODE_H} rx={7} fill="#0A0A0C"
+      <rect width={NODE_W} height={NODE_H} rx={9} fill="url(#ae-node)"
         stroke={stroke} strokeWidth={selected || active ? 2 : 1.2}
-        strokeDasharray={solid ? "0" : "5 4"} />
+        strokeDasharray={solid ? "0" : "5 4"} filter="url(#ae-shadow)" />
+      {/* subtle top inner highlight for depth */}
+      <rect x={1} y={1} width={NODE_W - 2} height={1} rx={1} fill="#FFFFFF" opacity={0.05} />
       {/* phase accent bar */}
       <rect x={0} y={0} width={4} height={NODE_H} rx={2} fill={color} />
       <text x={13} y={19} fontSize={12} fill={color} fontFamily="JetBrains Mono, monospace">{icon}</text>
@@ -142,22 +158,44 @@ function TreeCanvas({ tree, layout, w, sel, setSel, hover, setHover, active, mot
   const [view, setView] = useState({ k: 1, tx: 0, ty: 0 });
   const drag = useRef(null);
   const fittedFor = useRef(0);
+  const boxRef = useRef(null);
 
   // fit to container once we know the content + width
   const fit = useCallback(() => {
     if (!layout || !w) return;
-    const k = Math.min(1.1, Math.max(0.35, Math.min(w / layout.contentW, H / layout.contentH)));
+    const k = clamp(Math.min(w / layout.contentW, H / layout.contentH), 0.35, 1.1);
     setView({ k, tx: (w - layout.contentW * k) / 2, ty: 16 });
   }, [layout, w]);
   useEffect(() => {
     if (layout && w && fittedFor.current !== layout.contentW) { fittedFor.current = layout.contentW; fit(); }
   }, [layout, w, fit]);
 
-  const zoom = (factor) => setView((v) => ({ ...v, k: Math.max(0.25, Math.min(3, v.k * factor)) }));
-  const onWheel = (e) => {
-    e.preventDefault();
-    setView((v) => ({ ...v, k: Math.max(0.25, Math.min(3, v.k * (e.deltaY < 0 ? 1.1 : 0.9))) }));
-  };
+  // Zoom about a focal point (cursor for wheel, viewport centre for buttons) so
+  // content stays put under the pointer instead of flying off-screen.
+  const zoomAt = useCallback((factor, fx, fy) => {
+    setView((v) => {
+      const k = clamp(v.k * factor, 0.3, 3.5);
+      const scale = k / v.k;
+      return { k, tx: fx - (fx - v.tx) * scale, ty: fy - (fy - v.ty) * scale };
+    });
+  }, []);
+  const zoomBtn = (factor) => zoomAt(factor, w / 2, H / 2);
+
+  // Native, non-passive wheel listener: React's onWheel is passive, so its
+  // preventDefault is ignored (the page scrolls / the view jumps). Binding here
+  // lets us block page scroll and zoom smoothly to the cursor.
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - r.left, e.clientY - r.top);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomAt]);
+
   const onDown = (e) => { drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty }; };
   const onMove = (e) => {
     if (!drag.current) return;
@@ -180,14 +218,21 @@ function TreeCanvas({ tree, layout, w, sel, setSel, hover, setHover, active, mot
   const phaseMeta = Object.fromEntries((tree.phases || []).map((p) => [p.key, p]));
 
   return (
-    <div className="relative" style={{ width: w, height: H, background: "#050506", overflow: "hidden" }}
-      onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+    <div ref={boxRef} className="relative" style={{ width: w, height: H, background: "#050506", overflow: "hidden" }}
+      onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
       onClick={() => setSel(null)} data-testid="attack-tree">
       <svg width={w} height={H} style={{ display: "block", cursor: drag.current ? "grabbing" : "grab" }}>
         <defs>
           <pattern id="ae-grid" width="34" height="34" patternUnits="userSpaceOnUse">
             <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#12131A" strokeWidth="1" />
           </pattern>
+          <linearGradient id="ae-node" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#12131B" />
+            <stop offset="100%" stopColor="#08080C" />
+          </linearGradient>
+          <filter id="ae-shadow" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="2" stdDeviation="4" floodColor="#000000" floodOpacity="0.55" />
+          </filter>
           <radialGradient id="ae-vig" cx="50%" cy="42%" r="75%">
             <stop offset="55%" stopColor="#000000" stopOpacity="0" />
             <stop offset="100%" stopColor="#000000" stopOpacity="0.55" />
@@ -216,8 +261,8 @@ function TreeCanvas({ tree, layout, w, sel, setSel, hover, setHover, active, mot
           {tree.edges.map((e, i) => {
             const s = pos[e.source], t = pos[e.target];
             if (!s || !t) return null;
-            const y1 = s.y + NODE_H / 2, y2 = t.y - NODE_H / 2, my = (y1 + y2) / 2;
-            const d = `M ${s.x} ${y1} L ${s.x} ${my} L ${t.x} ${my} L ${t.x} ${y2}`;
+            const y1 = s.y + NODE_H / 2, y2 = t.y - NODE_H / 2;
+            const d = edgePath(s.x, y1, t.x, y2);
             const confirmed = e.status === "confirmed";
             const lit = onPath && onPath.has(e.source) && onPath.has(e.target);
             return (
@@ -247,8 +292,8 @@ function TreeCanvas({ tree, layout, w, sel, setSel, hover, setHover, active, mot
       </svg>
       {/* zoom controls */}
       <div className="absolute top-3 right-3 z-20 flex items-center gap-1">
-        <Btn variant="dark" icon={MagnifyingGlassPlus} onClick={() => zoom(1.25)} data-testid="tree-zoom-in" />
-        <Btn variant="dark" icon={MagnifyingGlassMinus} onClick={() => zoom(0.8)} data-testid="tree-zoom-out" />
+        <Btn variant="dark" icon={MagnifyingGlassPlus} onClick={() => zoomBtn(1.25)} data-testid="tree-zoom-in" />
+        <Btn variant="dark" icon={MagnifyingGlassMinus} onClick={() => zoomBtn(1 / 1.25)} data-testid="tree-zoom-out" />
         <Btn variant="dark" icon={ArrowsIn} onClick={fit} data-testid="tree-fit" />
       </div>
     </div>
@@ -423,10 +468,16 @@ export default function ThreatMapTab({ eid }) {
 
         <div ref={wrapRef}>
           <Panel className="p-0 overflow-hidden" data-testid="attack-tree-canvas">
-            {w > 0 && (
-              <TreeCanvas tree={tree} layout={layout} w={w} sel={sel} setSel={setSel}
-                hover={hover} setHover={setHover} active={active} motion={motion} />
-            )}
+            <ErrorBoundary fallback={
+              <div className="p-10 text-center text-muted text-sm">
+                The attack tree hit a rendering issue. Reload the tab to rebuild it from the engine.
+              </div>
+            }>
+              {w > 0 && (
+                <TreeCanvas tree={tree} layout={layout} w={w} sel={sel} setSel={setSel}
+                  hover={hover} setHover={setHover} active={active} motion={motion} />
+              )}
+            </ErrorBoundary>
           </Panel>
           {/* replay caption + legend */}
           <div className="flex flex-wrap items-center gap-4 mt-3 text-xs">
