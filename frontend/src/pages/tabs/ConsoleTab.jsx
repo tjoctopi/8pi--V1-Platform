@@ -193,6 +193,20 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
 
   useEffect(() => { load().catch((e) => toast.error(errMsg(e))); }, [load]); // eslint-disable-line
 
+  // While a job runs — especially a foothold parked at the human-approval gate —
+  // poll approvals + live sessions so a pending gate appears within seconds. Without
+  // this the console only refreshed approvals when the job ENDED, so a parked gate
+  // surfaced only at its 15-min timeout — by which point Approve returned
+  // "already resolved / timed out". Now the operator sees and can release it live.
+  useEffect(() => {
+    if (!busy) return undefined;
+    const t = setInterval(() => {
+      api.approvals(eid).then(setApprovals).catch(() => {});
+      loadC2();
+    }, 3000);
+    return () => clearInterval(t);
+  }, [busy, eid, loadC2]);
+
   const act = async (key, fn, msg) => {
     setBusy(key);
     try { await fn(); toast.success(msg); await load(); await reload(); }
