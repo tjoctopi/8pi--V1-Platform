@@ -24,6 +24,20 @@ _Last updated: 2026-07-24_
 - **Verified:** full pytest+ruff+mypy green; eslint clean + build compiles. New tests: `_primary_target`
   (aggregation + off-scope exclusion), `execute_recommended_path` (network rce path + needs-a-target error).
 
+## 2026-07-24 — Threat Map / Attack Tree rebuilt on React Flow (branch `fix/threat-map-react-flow`, off dev)
+- **Why:** the hand-rolled SVG pan/zoom kept crashing (zoom-in then drag → ErrorBoundary), and the manager
+  asked for a more professional approach. Chose React Flow (`@xyflow/react` v12) — the industry-standard
+  node/edge diagram lib — after confirming with the user.
+- **What:** rewrote `ThreatMapTab.jsx` on React Flow. Native, rock-solid trackpad/laptop pan+zoom (no more
+  hand-rolled transform math), built-in `<Controls>` + `<MiniMap>` + dotted `<Background>`. Custom `AttackNode`
+  (HUD card: phase color, status dot, technique, CVSS meter, glow) + `LaneNode` (kill-chain phase swimlane
+  bands). Deterministic layered (Sugiyama-lite barycenter) positions fed to React Flow (`nodesDraggable=false`).
+  Edges: smoothstep, animated on confirmed path, dashed for potential. Breach Replay + hover trace highlight
+  nodes/edges via a reactive effect (no position rebuild). Detail panel + summary tiles + DA badge unchanged.
+  `proOptions.hideAttribution` (MIT allows). Kept all data-testids.
+- **New dep:** `@xyflow/react ^12.11.2` (+ its CSS). Deploy must `npm install`.
+- **Verified:** eslint clean + `react-scripts build` compiles. No backend change (still reads `api.attackTree`).
+
 ## 2026-07-24 — Console/report polish: rename, live-feed persistence, professional report (branch `fix/console-report-polish`)
 - **#1 "World Model" → "Attack Intelligence"** in the Attack Path tab (user-facing label + SectionTitle
   reworded to plain language). API endpoint/data keys (`world-model`/`world_model_view`/`worldModel`)
