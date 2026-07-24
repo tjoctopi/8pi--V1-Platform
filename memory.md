@@ -5,6 +5,26 @@ change so the next session starts with truth, not assumptions.
 
 _Last updated: 2026-07-24_
 
+## 2026-07-24 — Console/report polish: rename, live-feed persistence, professional report (branch `fix/console-report-polish`)
+- **#1 "World Model" → "Attack Intelligence"** in the Attack Path tab (user-facing label + SectionTitle
+  reworded to plain language). API endpoint/data keys (`world-model`/`world_model_view`/`worldModel`)
+  unchanged — display strings only.
+- **#2 Console live analytics no longer vanish on tab switch.** Root cause: `EngagementDetail` rendered
+  the Console conditionally (`{tab==="console" && …}`), so switching tabs unmounted `ConsoleTab` and lost its
+  SSE `live` feed + `busy` state. Fix: keep Console **mounted but hidden** (`display:none`) when inactive, so
+  the feed survives tab switches; PLUS a **resume-on-mount** effect in ConsoleTab — on (re)mount it checks
+  `api.jobs` for a running job and reconnects the SSE + polls to completion (covers full reload / leaving the
+  engagement and returning). Refactored the SSE open into `openStream()`.
+- **#3 Professional, non-technical engagement report.** Rewrote `api/report_html.py` into a client-ready,
+  light-themed, printable deliverable: cover, **Executive Summary** (auto plain-language), overall **risk
+  verdict** banner, **Risk at a Glance** severity tiles, **Proof of Compromise** (live footholds → "interactive
+  access gained as whoami@host" + loot + captured site content), **Key Findings** cards ("What this means" /
+  "Why it is reachable" / "How to fix it", CVSS/CVE/KEV), Methodology & Scope, Assurance (audit chain). Enriched
+  `_build_report` (app.py) with `breach` (attack-tree summary) + `footholds` (sessions w/ proof). Removed the
+  stale "not wired" PreviewNotice from the in-console ReportTab. +5 report tests.
+- **Verified:** full pytest+ruff+mypy green; frontend eslint clean + `react-scripts build` compiles; report
+  renderer smoke-checked (all sections present).
+
 ## 2026-07-24 — Attack Tree: Threat Map tab becomes a kill-chain breach tree (branch `feat/attack-tree-threat-map`, stacked on `fix/pilot-quick-wins`)
 - **Ask:** the manager wanted the Threat Map to show a proper professional tree of the whole attack
   path (not the force-graph, not dummy) — customer-worthy, cinematic-but-enterprise.

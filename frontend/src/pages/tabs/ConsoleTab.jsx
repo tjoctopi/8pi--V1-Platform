@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   MagnifyingGlass, ShieldWarning, Robot, CaretDown, CaretRight, Check, X as XIcon,
   Gavel, Warning, Lightning, Crosshair, Terminal, Skull, Package, Globe,
@@ -213,13 +213,17 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
     }
     throw new Error("job timed out");
   };
-  const actJob = async (key, kind, startFn, msg) => {
-    setBusy(key); setLive([]);
+  const openStream = () => {
     let es;
     try { es = new EventSource(api.engagementEventsUrl(eid)); } catch { es = null; }
     if (es) es.onmessage = (e) => {
       try { const m = JSON.parse(e.data); setLive((L) => [...L.slice(-49), m]); } catch { /* keep-alive */ }
     };
+    return es;
+  };
+  const actJob = async (key, kind, startFn, msg) => {
+    setBusy(key); setLive([]);
+    const es = openStream();
     try {
       await startFn();
       await pollJob(kind);
@@ -227,6 +231,28 @@ export default function ConsoleTab({ eid, engagement, roe, reload }) {
     } catch (e) { toast.error(errMsg(e)); }
     finally { if (es) es.close(); setBusy(""); }
   };
+
+  // Resume a job still running server-side after a remount (returning to Console
+  // or a page reload), so the live feed + running indicator don't vanish. Runs
+  // once; the SSE reconnects and we poll the existing job to completion.
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (resumed.current) return;
+    api.jobs(eid).then((jobs) => {
+      const j = (jobs || []).find((x) => x.status === "running");
+      if (!j || resumed.current) return;
+      resumed.current = true;
+      const key = { campaign: "campaign", sense: "sense", "vuln-scan": "vuln",
+        "agent-run": "run", foothold: "est", "chain-exec": "chain" }[j.kind] || j.kind;
+      (async () => {
+        setBusy(key);
+        const es = openStream();
+        try { await pollJob(j.kind); await load(); await reload(); }
+        catch { /* job ended/failed — indicator just clears */ }
+        finally { if (es) es.close(); setBusy(""); }
+      })();
+    }).catch(() => {});
+  }, [eid]); // eslint-disable-line
 
   // C2: establish runs as a governed background job (gate may park for approval)
   const establish = (fid) =>

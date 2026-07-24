@@ -161,7 +161,11 @@ export default function EngagementDetail() {
         {tab === "assets" && <AssetsTab eid={id} />}
         {tab === "map" && <ThreatMapTab eid={id} />}
         {tab === "attackpath" && <AttackPathTab eid={id} />}
-        {tab === "console" && <ConsoleTab eid={id} engagement={e} roe={roe} reload={load} />}
+        {/* Console stays mounted (hidden when inactive) so a live attack's SSE feed
+            and running indicator survive tab switches instead of vanishing. */}
+        <div style={{ display: tab === "console" ? "block" : "none" }}>
+          <ConsoleTab eid={id} engagement={e} roe={roe} reload={load} />
+        </div>
         {tab === "findings" && <FindingsTab eid={id} reload={load} />}
         {tab === "vuln" && <VulnTab eid={id} reload={load} />}
         {tab === "audit" && <AuditTab eid={id} />}

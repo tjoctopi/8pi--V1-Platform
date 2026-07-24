@@ -494,7 +494,7 @@ function WorldModelPanel({ wm }) {
   return (
     <Panel className="p-4" data-testid="world-model-panel">
       <div className="flex items-center gap-2 mb-3">
-        <span className="label text-volt">World Model</span>
+        <span className="label text-volt">Attack Intelligence</span>
         <span className="ml-auto mono text-[10px] text-muted">{wm.reachable_assets || 0} reachable assets</span>
       </div>
       <div className="grid grid-cols-3 gap-2 mb-3">
@@ -685,7 +685,7 @@ export default function AttackPathTab({ eid }) {
           )}
         </Panel>
 
-        <SectionTitle sub="The engine's registered belief state — hypotheses, chains, owned principals — shared by every reasoning loop and the campaign.">World Model</SectionTitle>
+        <SectionTitle sub="What the platform has learned about your environment — live hypotheses, attack chains, and the accounts/hosts it has taken control of — shared by every reasoning agent and the campaign.">Attack Intelligence</SectionTitle>
         <WorldModelPanel wm={wm} />
       </div>
     </div>
