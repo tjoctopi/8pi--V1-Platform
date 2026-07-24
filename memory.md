@@ -5,6 +5,25 @@ change so the next session starts with truth, not assumptions.
 
 _Last updated: 2026-07-24_
 
+## 2026-07-24 — Execute Recommended Path (AI narrative → real attack) (branch `feat/execute-recommended-path`, stacked on `fix/console-report-polish`)
+- **Ask:** the AI Attack Path narrative gives the most-probable path but had no way to *run* it — user wants an
+  "Execute Recommended Path" option underneath the narrative that then executes properly.
+- **Backend:** `attack_path_narrative` now returns a structured `target` (the in-scope host the path converges
+  on — `_primary_target`, CIDR-aware via `_asset_matches_host`, off-scope third-party hosts excluded). New
+  `adapter.execute_recommended_path(external_id, target=None)`: runs network-service exploitation FIRST (fresh
+  state so the msf module sees un-promoted exposed-service findings), then the focused web sweep, then
+  verify→correlate→compose, then lands a governed foothold on a confirmed foothold-capable finding on the host.
+  New job kind `path-exec` + endpoint `POST /engagements/{eid}/attack-path/execute?target=`. Stream `done`
+  event now carries `target`.
+- **Ordering gotcha (fixed):** running verify/correlate BEFORE `_exploit_network_services` promotes the
+  exposed-service findings out from under the metasploit module (it only exploits PROPOSED) → no rce. So exploit
+  runs first, confirm second.
+- **Frontend (AttackPathTab):** once a narrative is generated, an "Execute Recommended Path" panel appears with
+  the target host + a governed Execute button → POSTs, polls the `path-exec` job, refreshes attack-path +
+  attack-intelligence + sessions, and reports the landed foothold (whoami@host) or an honest "no foothold yet".
+- **Verified:** full pytest+ruff+mypy green; eslint clean + build compiles. New tests: `_primary_target`
+  (aggregation + off-scope exclusion), `execute_recommended_path` (network rce path + needs-a-target error).
+
 ## 2026-07-24 — Threat Map / Attack Tree rebuilt on React Flow (branch `fix/threat-map-react-flow`, off dev)
 - **Why:** the hand-rolled SVG pan/zoom kept crashing (zoom-in then drag → ErrorBoundary), and the manager
   asked for a more professional approach. Chose React Flow (`@xyflow/react` v12) — the industry-standard

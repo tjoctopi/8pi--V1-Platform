@@ -1035,6 +1035,83 @@ class EngineAdapter:
                 "realised": realised, "confirmed_depth": refreshed.confirmed_depth,
                 "steps": len(refreshed.steps), "session": session}
 
+    def execute_recommended_path(
+        self, external_id: str, target: str | None = None, *, actor: str = "operator"
+    ) -> dict[str, Any]:
+        """Execute the AI-recommended most-probable path — turn the narrative into a
+        real attack against its target host.
+
+        Drives the same governed, confirmation-grade pipeline the console uses,
+        focused on the recommended host: (1) deterministic web sweep on the host so
+        oracle-ready candidates graduate, (2) verify → correlate so proposed findings
+        become CONFIRMED, (3) network-service exploitation for the non-web surface,
+        (4) if a foothold-capable finding on the host is confirmed, open a live,
+        governed C2 session on it. Scope-enforced, audited, kill-switchable; runs as
+        a background job. Returns the target, confirmations, and any session opened.
+        """
+
+        eid = engagement_id_for(external_id)
+        eng = self.engagement(external_id)
+        host = self._hostkey_np(target) if target else self._primary_target(
+            external_id, self.findings(external_id),
+            {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0},
+        )
+        if not host:
+            raise AttackEngineError(
+                "no target host for the recommended path — run Sensing / Vuln Scan "
+                "first so the engine has findings to build a route from"
+            )
+        self._emit(eid, "path.execute", {"target": host})
+
+        # 1. non-web foothold path FIRST (nmap → exploit module → session), on fresh
+        #    state so the exploit module sees un-promoted exposed-service findings
+        #    (a prior verify/correlate would graduate them out from under it). Governed.
+        with contextlib.suppress(Exception):
+            self._exploit_network_services(external_id)
+        # 2. discover on the recommended host's web surface (graduate oracle-ready leads)
+        web = self._web_targets_or_recon(external_id)
+        if web:
+            focused = [w for w in web if host in w] or web
+            with contextlib.suppress(Exception):
+                self._deterministic_web_sweep(external_id, focused)
+        # 3. confirm: oracles verify web candidates + correlate promotes everything
+        #    (web oracles + the network rce + CVE matches) to CONFIRMED
+        with contextlib.suppress(AttackEngineError):
+            eng.verify()
+        with contextlib.suppress(AttackEngineError):
+            eng.correlate()
+        self._compose_chains(eng)
+
+        # 4. land a live session on a confirmed foothold-capable finding on the host
+        session: dict[str, Any] | None = None
+        on_host = [f for f in eng.store.findings(FindingState.CONFIRMED)
+                   if self._asset_matches_host(f.asset, host)]
+        for f in on_host:
+            if self._is_foothold_capable(f):
+                try:
+                    session = self.establish_foothold(external_id, f.id, actor=actor)
+                except AttackEngineError:
+                    continue
+                if session:
+                    break
+
+        host_confirmed = len(on_host)
+        self._persist_run(eid, {
+            "id": f"run-{len(self._runs.get(eid, [])) + 1}",
+            "agent_name": "Recommended Path", "role": "offensive", "status": "completed",
+            "detection_rate": None, "started_at": utcnow().isoformat(),
+            "ended_at": utcnow().isoformat(),
+            "summary": (f"executed recommended path on {host} — "
+                        f"{host_confirmed} confirmed finding(s)"
+                        f"{' · live session ' + session['id'] if session else ' · no session'}"),
+            "steps": [], "detections": [], "approvals_created": 0,
+        })
+        self._emit(eid, "path.executed",
+                   {"target": host, "confirmed": host_confirmed,
+                    "session": session["id"] if session else None})
+        return {"target": host, "confirmed": host_confirmed, "session": session,
+                "reached_foothold": bool(session)}
+
     def vuln_scan(self, external_id: str) -> tuple[VerifyReport, MatchReport]:
         """Thoroughly screen web surfaces, run the accuracy oracles, correlate CVEs.
 
@@ -1278,6 +1355,8 @@ class EngineAdapter:
                 self.establish_foothold(external_id, job.get("ref") or "")
             elif kind == "chain-exec":
                 self.execute_chain(external_id, job.get("ref") or "")
+            elif kind == "path-exec":
+                self.execute_recommended_path(external_id, job.get("ref") or None)
             else:
                 raise AttackEngineError(f"unknown job kind {kind!r}")
             job["status"] = "done"
@@ -2087,9 +2166,10 @@ class EngineAdapter:
         findings = self.findings(external_id) if self.is_open(external_id) else []
         ap = self.attack_path(external_id)
         if not findings and not ap.get("paths"):
-            return {"text": "", "route": "none", "empty": True,
+            return {"text": "", "route": "none", "empty": True, "target": None,
                     "usage": {"token_in": 0, "token_out": 0, "latency_ms": 0, "cost": 0}}
         sev_rank = {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0}
+        target = self._primary_target(external_id, findings, sev_rank)
         top = sorted(
             findings,
             key=lambda f: (f.get("exploitability") == "confirmed",
@@ -2123,10 +2203,59 @@ class EngineAdapter:
         return {
             "text": resp.text,
             "route": resp.tier or resp.model,
+            "target": target,
             "usage": {"token_in": resp.usage.prompt_tokens,
                       "token_out": resp.usage.completion_tokens,
                       "latency_ms": 0, "cost": 0},
         }
+
+    def _primary_target(
+        self, external_id: str, findings: list[dict[str, Any]], sev_rank: dict[str, int]
+    ) -> str | None:
+        """The host the most-probable path converges on — the one aggregating the
+        most actionable findings (confirmed/high weighted), restricted to in-scope
+        hosts so an off-scope third-party candidate can never become the target."""
+
+        scope_targets = self._scope_targets(external_id)
+        score: dict[str, float] = {}
+        for f in findings:
+            host = f.get("asset_id")
+            if not host:
+                continue
+            hk = self._hostkey_np(str(host))
+            # keep only in-scope hosts when we know the scope (CIDR-aware, so a host
+            # inside an authorized /24 counts and an off-scope third-party does not)
+            if scope_targets and not any(self._asset_matches_host(t, hk) for t in scope_targets):
+                continue
+            expl = f.get("exploitability")
+            weight = 5 if expl == "confirmed" else 2 if expl == "reachable" else 0
+            score[str(host)] = score.get(str(host), 0.0) + weight + sev_rank.get(
+                str(f.get("severity") or ""), 0) + 1
+        return max(score, key=lambda h: score[h]) if score else None
+
+    @staticmethod
+    def _hostkey_np(addr: str) -> str:
+        """Address → bare host (strip CIDR/port), for scope/target matching."""
+
+        return str(addr or "").split("/", 1)[0].split(":", 1)[0].strip()
+
+    def _asset_matches_host(self, asset: str, host: str) -> bool:
+        """Whether ``asset`` (a host, IP, or CIDR/target) refers to ``host``.
+
+        Handles the two ways findings key their asset: a bare host (exact match)
+        and a scan target that is a CIDR containing the host (network-exploit
+        findings are keyed by the scanned CIDR, not the individual IP)."""
+
+        import ipaddress
+
+        if self._hostkey_np(asset) == host:
+            return True
+        if "/" in str(asset):
+            try:
+                return ipaddress.ip_address(host) in ipaddress.ip_network(asset, strict=False)
+            except ValueError:
+                return False
+        return False
 
     def report_summary(self, external_id: str) -> dict[str, Any]:
         verdict = self.audit_verify(external_id)

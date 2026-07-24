@@ -489,6 +489,67 @@ def test_attack_tree_surfaces_live_foothold_with_proof() -> None:
     assert {"source": sess["id"], "target": loot["id"], "status": "confirmed"} in t["edges"]
 
 
+def test_primary_target_picks_the_host_aggregating_findings() -> None:
+    # The recommended path converges on the host with the most actionable findings.
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "pt-1", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    findings = [
+        {"asset_id": "10.5.0.11", "severity": "crit", "exploitability": "confirmed"},
+        {"asset_id": "10.5.0.11", "severity": "high", "exploitability": "reachable"},
+        {"asset_id": "10.5.0.12", "severity": "low", "exploitability": "reachable"},
+    ]
+    rank = {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0}
+    assert adapter._primary_target("pt-1", findings, rank) == "10.5.0.11"
+
+
+def test_primary_target_ignores_off_scope_hosts() -> None:
+    # An off-scope third-party candidate can never become the target host.
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "pt-2", {"scope_allowlist": ["10.5.0.12/32"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    findings = [
+        {"asset_id": "www.youtube.com", "severity": "crit", "exploitability": "reachable"},
+        {"asset_id": "10.5.0.12", "severity": "info", "exploitability": "reachable"},
+    ]
+    rank = {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0}
+    assert adapter._primary_target("pt-2", findings, rank) == "10.5.0.12"
+
+
+def test_execute_recommended_path_lands_network_rce_foothold() -> None:
+    # End-to-end: executing the recommended path on the distcc host confirms RCE
+    # via the network-exploit route (autonomous under an exploit-intensity scope).
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "rp-1", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "exploit"},
+        authorized_by="ciso@x", signature="signed-rp",
+    )
+    adapter.open(scope)
+    result = adapter.execute_recommended_path("rp-1", "10.5.0.12")
+    assert result["target"] == "10.5.0.12"
+    eng = adapter.engagement("rp-1")
+    rce = [f for f in eng.store.findings(FindingState.CONFIRMED) if f.type == "rce"]
+    assert rce and result["confirmed"] >= 1
+
+
+def test_execute_recommended_path_needs_a_target() -> None:
+    # No findings → no host to converge on → a clear, honest error (not a crash).
+    adapter = _exploit_adapter()
+    scope = scope_from_roe(
+        "rp-2", {"scope_allowlist": ["10.5.0.0/24"], "max_intensity": "safe-active"},
+        authorized_by="a", signature="s",
+    )
+    adapter.open(scope)
+    with pytest.raises(AttackEngineError):
+        adapter.execute_recommended_path("rp-2")
+
+
 def test_campaign_status_kill_chain_shape_and_progression(adapter: EngineAdapter) -> None:
     _open_signed(adapter, "cs-1")
     st = adapter.campaign_status("cs-1")
