@@ -832,6 +832,23 @@ def create_app() -> FastAPI:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"job_id": job["id"], "status": job["status"], "kind": "chain-exec"}
 
+    @api.post("/engagements/{eid}/attack-path/execute")
+    async def execute_attack_path(
+        eid: str, target: str | None = None,
+        _: dict[str, Any] = Depends(require_role("operator")),
+    ) -> dict[str, Any]:
+        """Execute the AI-recommended most-probable path against its target host
+        (confirm findings → land a governed foothold) — as a background job (poll
+        ``/jobs`` kind ``path-exec``, watch ``/sessions`` + ``/attack-path``). The
+        ``target`` host defaults to the one the narrative converged on."""
+
+        _require_open(eid)
+        try:
+            job = adapter().start_job(eid, "path-exec", ref=target)
+        except AttackEngineError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        return {"job_id": job["id"], "status": job["status"], "kind": "path-exec"}
+
     # ── offensive C2 / live footholds ────────────────────────────────────────
     @api.get("/engagements/{eid}/sessions")
     async def sessions(eid: str) -> dict[str, Any]:
@@ -905,7 +922,8 @@ def create_app() -> FastAPI:
                 return
             text = result.get("text") or ""
             done: dict[str, Any] = {"done": True, "route": result.get("route"),
-                                    "usage": result.get("usage")}
+                                    "usage": result.get("usage"),
+                                    "target": result.get("target")}
             if not text:
                 done["empty"] = True
                 yield f"data: {json.dumps(done)}\n\n"

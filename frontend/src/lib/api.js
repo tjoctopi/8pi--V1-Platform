@@ -131,6 +131,8 @@ export const api = {
   // attack path + surface
   attackPath: (id) => http.get(`/engagements/${id}/attack-path`).then((r) => r.data),
   attackPathStreamUrl: (id) => withToken(`${API}/engagements/${id}/attack-path/stream`),
+  executeAttackPath: (id, target) =>
+    http.post(`/engagements/${id}/attack-path/execute`, null, { params: target ? { target } : {} }).then((r) => r.data),
   assetDetail: (eid, aid) => http.get(`/engagements/${eid}/assets/${aid}`).then((r) => r.data),
 
   // auth admin (users mgmt)

@@ -558,9 +558,34 @@ export default function AttackPathTab({ eid }) {
   const [streaming, setStreaming] = useState(false);
   const [shown, setShown] = useState("");
   const [meta, setMeta] = useState(null);
+  const [pathExec, setPathExec] = useState(null); // {running|done|error, footholds, session}
   const bufRef = useRef("");
   const esRef = useRef(null);
   const timerRef = useRef(null);
+
+  // Execute the AI-recommended most-probable path against its target host:
+  // confirm the findings, then land a live governed foothold. Governed job.
+  const runRecommendedPath = async () => {
+    setPathExec({ running: true });
+    try {
+      await api.executeAttackPath(eid, meta?.target);
+      for (let i = 0; i < 300; i++) {
+        const jobs = await api.jobs(eid);
+        const j = jobs.find((x) => x.kind === "path-exec");
+        if (j && j.status !== "running") {
+          if (j.status === "error") throw new Error(j.detail || "path execution failed");
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      api.attackPath(eid).then(setData);
+      api.worldModel(eid).then(setWm).catch(() => {});
+      const sess = await api.sessions(eid).catch(() => ({ sessions: [] }));
+      const live = (sess.sessions || []).filter((s) => s.status !== "closed");
+      setPathExec({ done: true, footholds: live.length, session: live[0] || null });
+      toast.success(live.length ? "Recommended path executed — live foothold landed" : "Recommended path executed");
+    } catch (e) { setPathExec({ error: errMsg(e) }); toast.error(errMsg(e)); }
+  };
 
   useEffect(() => { api.attackPath(eid).then(setData); }, [eid]);
   useEffect(() => { api.worldModel(eid).then(setWm).catch(() => setWm(null)); }, [eid]);
@@ -581,7 +606,7 @@ export default function AttackPathTab({ eid }) {
   const startStream = useCallback(() => {
     esRef.current?.close();
     clearInterval(timerRef.current);
-    bufRef.current = ""; setShown(""); setMeta(null); setStreaming(true);
+    bufRef.current = ""; setShown(""); setMeta(null); setStreaming(true); setPathExec(null);
     const es = new EventSource(api.attackPathStreamUrl(eid));
     esRef.current = es;
     es.onmessage = (e) => { try { const m = JSON.parse(e.data); if (m.delta) bufRef.current += m.delta; if (m.done) { setMeta(m); es.close(); } } catch (_) {} };
@@ -684,6 +709,42 @@ export default function AttackPathTab({ eid }) {
             </div>
           )}
         </Panel>
+
+        {/* Execute the AI-recommended path — appears once a narrative is generated */}
+        {meta && !meta.empty && shown && !streaming && (
+          <Panel className="p-4" data-testid="execute-path-panel">
+            <div className="flex items-center gap-2 flex-wrap mb-2">
+              <Target size={16} className="text-volt" weight="fill" />
+              <span className="h-font text-base text-white">Execute Recommended Path</span>
+              {meta.target && <span className="mono text-[11px] text-muted">target {meta.target}</span>}
+              <Btn className="ml-auto" variant="danger" icon={Lightning}
+                loading={pathExec?.running} disabled={pathExec?.running}
+                onClick={runRecommendedPath} data-testid="execute-path-btn">
+                {pathExec?.done ? "Re-run Path" : "Execute Path"}
+              </Btn>
+            </div>
+            <div className="text-xs text-sub">
+              Runs the AI's most-probable route against <b className="text-white">{meta.target || "the target host"}</b> —
+              confirms the findings, then lands a live, governed foothold. Every step is scope-checked, gated, and audited.
+            </div>
+            {pathExec?.running && (
+              <div className="mt-2 text-[11px] mono text-volt flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-volt blink" /> executing — confirming findings &amp; landing a foothold… (minutes)
+              </div>
+            )}
+            {pathExec?.done && (
+              <div className="mt-2 p-2.5 bg-black border-l-2 border-volt text-xs" data-testid="execute-path-result">
+                {pathExec.footholds > 0 ? (
+                  <span className="text-white">✓ Path executed — live foothold on <b>{pathExec.session?.host}</b> as{" "}
+                    <b>{pathExec.session?.proof?.whoami || "shell"}</b>. Open the <b>Console</b> tab for the live session + proof of impact.</span>
+                ) : (
+                  <span className="text-sub">Path executed. No live foothold landed yet — check the confirmed findings on the Findings tab; a step may need a gate approval or deeper confirmation.</span>
+                )}
+              </div>
+            )}
+            {pathExec?.error && <div className="mt-2 text-xs text-crit" data-testid="execute-path-error">{pathExec.error}</div>}
+          </Panel>
+        )}
 
         <SectionTitle sub="What the platform has learned about your environment — live hypotheses, attack chains, and the accounts/hosts it has taken control of — shared by every reasoning agent and the campaign.">Attack Intelligence</SectionTitle>
         <WorldModelPanel wm={wm} />
